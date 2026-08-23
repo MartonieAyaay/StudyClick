@@ -1,0 +1,44 @@
+{
+  "hash": "c9970e20",
+  "configHash": "c9003288",
+  "lockfileHash": "d98fe5cb",
+  "browserHash": "652f2c5b",
+  "optimized": {
+    "react-dom": {
+      "src": "../../react-dom/index.js",
+      "file": "react-dom.js",
+      "fileHash": "a3d17a66",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "dfc97b6a",
+      "needsInterop": true
+    },
+    "react": {
+      "src": "../../react/index.js",
+      "file": "react.js",
+      "fileHash": "b296066f",
+      "needsInterop": true
+    },
+    "react/jsx-dev-runtime": {
+      "src": "../../react/jsx-dev-runtime.js",
+      "file": "react_jsx-dev-runtime.js",
+      "fileHash": "31f05812",
+      "needsInterop": true
+    },
+    "react/jsx-runtime": {
+      "src": "../../react/jsx-runtime.js",
+      "file": "react_jsx-runtime.js",
+      "fileHash": "65b64117",
+      "needsInterop": true
+    }
+  },
+  "chunks": {
+    "rolldown-runtime-BvCyGRYZ": {
+      "file": "rolldown-runtime-BvCyGRYZ.js",
+      "isDynamicEntry": false
+    }
+  }
+}
