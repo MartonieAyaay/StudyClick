@@ -510,6 +510,20 @@ function App() {
     setGenerationError(null)
 
     let cancelled = false
+    let stopCreep = null
+
+    // Ticks the progress bar smoothly from `floor` toward `ceiling` (never
+    // reaching it) while a request is in flight, so the bar keeps moving
+    // instead of freezing at one number until the response comes back.
+    function creepProgress(floor, ceiling) {
+      let current = floor
+      const cap = ceiling - Math.min(2, (ceiling - floor) * 0.2)
+      const intervalId = window.setInterval(() => {
+        current = Math.min(current + (cap - current) * 0.06 + 0.1, cap)
+        setLoadingProgress(current)
+      }, 150)
+      return () => window.clearInterval(intervalId)
+    }
 
     async function runGeneration() {
       const sources = sourceFiles.map((s) => ({ name: s.name, text: s.text }))
@@ -520,6 +534,7 @@ function App() {
       try {
         setLoadingMessage('Splitting your sources into modules...')
         setLoadingProgress(8)
+        stopCreep = creepProgress(8, 20)
 
         const modulesRes = await fetch(`${API_BASE}/test-modules`, {
           method: 'POST',
@@ -527,17 +542,23 @@ function App() {
           body: JSON.stringify({ sources }),
         })
         const modulesData = await modulesRes.json()
+        stopCreep()
         if (cancelled) return
         if (!modulesRes.ok) {
           throw new Error(modulesData.error || 'Failed to determine modules')
         }
+        setLoadingProgress(20)
         const modules = modulesData.modules
 
+        const perModuleSpan = 60 / modules.length
         const generatedModules = []
         for (let i = 0; i < modules.length; i++) {
           if (cancelled) return
+          const floor = 20 + i * perModuleSpan
+          const ceiling = 20 + (i + 1) * perModuleSpan
           setLoadingMessage(`Generating content for "${modules[i].title}" (${i + 1}/${modules.length})...`)
-          setLoadingProgress(15 + Math.round((i / modules.length) * 60))
+          setLoadingProgress(floor)
+          stopCreep = creepProgress(floor, ceiling)
 
           const contentRes = await fetch(`${API_BASE}/generate`, {
             method: 'POST',
@@ -545,15 +566,17 @@ function App() {
             body: JSON.stringify({ text: modules[i].text, descriptionStyle }),
           })
           const content = await contentRes.json()
+          stopCreep()
           if (cancelled) return
           if (!contentRes.ok) {
             throw new Error(content.error || `Failed to generate content for "${modules[i].title}"`)
           }
+          setLoadingProgress(ceiling)
           generatedModules.push({ title: modules[i].title, ...content })
         }
 
         setLoadingMessage('Building your Final Test...')
-        setLoadingProgress(80)
+        stopCreep = creepProgress(80, 98)
 
         const finalTestRes = await fetch(`${API_BASE}/test-final-test`, {
           method: 'POST',
@@ -561,6 +584,7 @@ function App() {
           body: JSON.stringify({ modules, quizType: quizTypes }),
         })
         const finalTestData = await finalTestRes.json()
+        stopCreep()
         if (cancelled) return
         if (!finalTestRes.ok) {
           throw new Error(finalTestData.error || 'Failed to generate the Final Test')
@@ -586,6 +610,7 @@ function App() {
         }, 300)
 
       } catch (err) {
+        if (stopCreep) stopCreep()
         if (cancelled) return
         setGenerationError(err.message || 'Something went wrong generating your reviewer.')
       }
@@ -595,6 +620,7 @@ function App() {
 
     return () => {
       cancelled = true
+      if (stopCreep) stopCreep()
     }
   }, [page])
 
@@ -611,6 +637,13 @@ function App() {
 
   function handleFinish() {
     setPage('generating')
+  }
+
+  function handleNewReviewer() {
+    setTitle('')
+    setNotes('')
+    setSourceFiles([])
+    setPage('upload-title')
   }
 
   function openReviewer(reviewer) {
@@ -659,7 +692,7 @@ function App() {
 
   return (
     <div className="app-shell" style={{ '--accent': accentColor }}>
-      <Sidebar page={page} setPage={setPage} canConfigure={canConfigure} title={title} />
+      <Sidebar page={page} setPage={setPage} canConfigure={canConfigure} title={title} onNewReviewer={handleNewReviewer} />
       <div className="content">
         {page === 'upload-title' && (
           <UploadTitleStep title={title} setTitle={setTitle} onNext={() => setPage('upload-sources')} />
@@ -697,7 +730,7 @@ function App() {
   )
 }
 
-function Sidebar({ page, setPage, canConfigure, title }) {
+function Sidebar({ page, setPage, canConfigure, title, onNewReviewer }) {
   const isUpload = page === 'upload-title' || page === 'upload-sources'
   const isConfigure = page === 'configure'
   const isReviewers = page === 'reviewers' || page === 'generating' || page === 'viewer'
@@ -722,6 +755,7 @@ function Sidebar({ page, setPage, canConfigure, title }) {
         </button>
         <button className={isReviewers ? 'nav-item active' : 'nav-item'} onClick={() => setPage('reviewers')}>Reviewers</button>
       </nav>
+      <button className="sidebar-new-btn" onClick={onNewReviewer}>+ New</button>
     </div>
   )
 }
@@ -1321,13 +1355,13 @@ function ReviewerViewer({ reviewer, onBack }) {
 
       <div className="viewer-content" style={{ zoom: fontScale }}>
         {activeModule && (
-          <>
+          <div key={activeTab} className="tab-fade">
             <h3 className="module-title">{activeModule.title}</h3>
             <ModuleContent module={activeModule} query={query} collapsible={reviewer.collapsible !== false} />
-          </>
+          </div>
         )}
         {activeTab === 'final-test' && (
-          <div className="module-content">
+          <div key="final-test" className="tab-fade module-content">
             <h3 className="module-title">Final Test</h3>
             <QuizSection quiz={reviewer.finalTest} />
           </div>

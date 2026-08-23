@@ -1,9 +1,15 @@
+@keyframes pageFadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .landing {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #dbe6f0;
+  animation: pageFadeIn 0.35s ease;
 }
 
 .landing-card {
@@ -36,10 +42,15 @@
   font-size: 14px;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  transition: filter 0.15s ease, transform 0.15s ease;
 }
 
 .btn-primary:hover {
   filter: brightness(0.9);
+}
+
+.btn-primary:active {
+  transform: scale(0.97);
 }
 
 .btn-primary:disabled {
@@ -64,6 +75,30 @@
   height: 100vh;
   align-self: flex-start;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-new-btn {
+  margin-top: auto;
+  background: var(--accent, #40566F);
+  color: #fff;
+  border: none;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-family: var(--sans);
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.sidebar-new-btn:hover {
+  filter: brightness(0.9);
+}
+
+.sidebar-new-btn:active {
+  transform: scale(0.97);
 }
 
 .sidebar-logo {
@@ -88,6 +123,7 @@
   font-size: 14px;
   color: var(--text);
   cursor: pointer;
+  transition: background-color 0.18s ease, color 0.18s ease;
 }
 
 .nav-item.active {
@@ -118,6 +154,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  animation: pageFadeIn 0.35s ease;
 }
 
 .input-with-count {
@@ -393,6 +430,12 @@ input[type='color'] {
   justify-content: space-between;
   gap: 16px;
   cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.reviewer-row:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
 }
 
 .reviewer-row-main {
@@ -422,6 +465,11 @@ input[type='color'] {
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.icon-btn:active {
+  transform: scale(0.9);
 }
 
 .icon-btn.download {
@@ -493,6 +541,7 @@ input[type='color'] {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
 }
 
 .viewer-tab.active {
@@ -510,6 +559,10 @@ input[type='color'] {
   margin: 0 auto;
 }
 
+.tab-fade {
+  animation: pageFadeIn 0.25s ease;
+}
+
 .module-content {
   display: flex;
   flex-direction: column;
@@ -525,6 +578,7 @@ input[type='color'] {
   flex-direction: column;
   gap: 16px;
   color: var(--viewer-text);
+  transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
 }
 
 .quiz-row {
@@ -626,6 +680,15 @@ input[type='color'] {
   background: transparent;
   cursor: pointer;
   font-family: var(--sans);
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.btn-secondary:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .btn-secondary:disabled,
@@ -644,6 +707,7 @@ input[type='color'] {
   background: var(--viewer-page-bg);
   padding: 32px 48px;
   box-sizing: border-box;
+  transition: background-color 0.25s ease;
   --viewer-page-bg: color-mix(in srgb, var(--accent) 8%, white);
   --viewer-card-bg: #ffffff;
   --viewer-card-border: var(--accent);
@@ -732,6 +796,7 @@ input[type='color'] {
   font-weight: 600;
   cursor: pointer;
   color: inherit;
+  transition: background-color 0.15s ease, border-color 0.25s ease, color 0.25s ease;
 }
 
 .theme-btn {
@@ -795,6 +860,7 @@ mark {
   border-radius: 12px;
   overflow: hidden;
   color: var(--viewer-text);
+  transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
 }
 
 .collapsible-header {
@@ -838,6 +904,7 @@ mark {
 
 .collapsible-body {
   padding: 0 20px 20px;
+  animation: pageFadeIn 0.2s ease;
 }
 
 .key-vital, .key-glossary, .key-start-here {
