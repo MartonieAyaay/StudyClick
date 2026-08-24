@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>StudyClick Setup</title>
+<style>
+  body {
+    font-family: -apple-system, 'Segoe UI', sans-serif;
+    background: #dbe6f0;
+    margin: 0;
+    padding: 32px;
+    box-sizing: border-box;
+  }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  p { font-size: 13px; color: #444; margin: 0 0 20px; line-height: 1.5; }
+  a { color: #40566F; }
+  input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid #000;
+    box-sizing: border-box;
+    font-size: 14px;
+    margin-bottom: 8px;
+  }
+  button {
+    background: #7091b8;
+    color: #fff;
+    border: none;
+    padding: 10px 24px;
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .hint { font-size: 11px; color: #666; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+  <h1>Welcome to StudyClick</h1>
+  <p>
+    Enter your Google Gemini API key to get started. You can get a free key at
+    <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a>.
+  </p>
+  <input type="password" id="apiKey" placeholder="Paste your Gemini API key here" />
+  <div class="hint">Your key stays on this computer only — it's never sent anywhere except directly to Google.</div>
+  <button id="saveBtn">Save and Continue</button>
+
+  <script>
+    window.studyclick.onExistingKey((key) => {
+      if (key) document.getElementById('apiKey').value = key
+    })
+    document.getElementById('saveBtn').addEventListener('click', () => {
+      const key = document.getElementById('apiKey').value.trim()
+      if (!key) {
+        alert('Please enter an API key.')
+        return
+      }
+      window.studyclick.saveApiKey(key)
+    })
+  </script>
+</body>
+</html>

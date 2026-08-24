@@ -3,11 +3,14 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:start": "electron .",
+    "electron:build": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "idb": "^8.0.3",
@@ -20,10 +23,27 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "eslint": "^10.6.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.7.0",
     "vite": "^8.1.1"
+  },
+  "build": {
+  "appId": "com.studyclick.app",
+  "productName": "StudyClick",
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "server/**/*",
+    "package.json",
+    "!server/.env"
+  ],
+  "win": {
+    "target": "nsis",
+    "icon": "electron/icon.ico"
   }
+}
 }
