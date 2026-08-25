@@ -30,7 +30,7 @@ async function generateWithRetry(params, maxRetries = 3) {
     }
 }
 
-async function generateModuleContent(text, descriptionStyle = 'verbatim') {
+async function generateModuleContent(text, descriptionStyle = 'verbatim', includeExamples = true) {
     if (descriptionStyle !== 'verbatim' && descriptionStyle !== 'paraphrase') {
         throw new Error('Select either verbatim or paraphrase')
     }
@@ -39,9 +39,13 @@ async function generateModuleContent(text, descriptionStyle = 'verbatim') {
         ? 'Write descriptions in simple, paraphrased language, easy for a student to understand.'
         : 'Use wording as close as possible to the original source text (verbatim), not paraphrased.'
 
+    const examplesInstruction = includeExamples
+        ? `- "examples": worked examples for this concept, but ONLY when the concept genuinely benefits from a step-by-step worked problem (math, formulas, calculations, procedures, algorithms, or anything with a concrete right/wrong answer to work through). If the concept is purely definitional, conceptual, historical, or descriptive and there is no meaningful problem to solve, return an empty array — do not invent a trivial or filler example just to fill the field. When examples ARE warranted, include 1 to 3 of them ordered easiest to hardest (e.g. "Straightforward", "Moderately involved", "Edge case" — use however many genuinely add value, not always 3). Each is {tag, problem, steps, answer} where "steps" is an array of full-sentence solution steps (not just bare math) and "answer" states the final answer clearly.`
+        : `- "examples": always return an empty array for this field. Do not generate worked examples for this reviewer.`
+
     const prompt = `You are an expert tutor building a comprehensive, detailed interactive study reviewer for a student preparing for an exam, in the same style as a professionally written textbook companion guide. Given the lesson content below, generate a complete, richly detailed reviewer with the following three parts:
 
-1. SUMMARY: a comprehensive, multi-paragraph summary that thoroughly walks through every major concept, process, and idea covered in the material, in enough depth that a student could fully review and understand the lesson from this summary alone.
+1. SUMMARY: a short, high-level overview of the lesson in exactly 3 to 5 sentences, one tight paragraph. Just orient the student on what this lesson covers and why it matters — do not try to explain every concept in detail here, that's what the Key Concepts and Concepts sections below are for. Keep it concise even if the source material is long.
 
 2. KEY CONCEPTS:
 - "vital": the 4-6 most important high-level ideas from this lesson, each as {idea, why} where "idea" is a punchy one-sentence statement and "why" explains in a sentence why it matters or how it connects to the rest of the material. This must NEVER be empty.
@@ -52,9 +56,9 @@ async function generateModuleContent(text, descriptionStyle = 'verbatim') {
 - "title": a short, descriptive title
 - "definition": a thorough explanation, using an HTML unordered list (<ul class="def-list"><li>...</li></ul>) if it has multiple parts, rules, or steps. Stay faithful to the source material's own explanation.
 - "formula": if this concept has a formula, equation, or symbolic notation, include it as a short string (use HTML entities for math symbols like &equiv; &radic; &sup2; where helpful). Omit this field entirely if there is no formula.
-- "examples": exactly 3 worked examples per concept, ordered easiest to hardest: one "Straightforward", one "Moderately involved", one "Edge case". Each is {tag, problem, steps, answer} where "steps" is an array of full-sentence solution steps (not just bare math) and "answer" states the final answer clearly. This must always contain exactly 3 examples.
+${examplesInstruction}
 
-The first concept in the array must always be a "Start Here · Core Vocabulary" primer titled "The 5%: Basic Vocabulary for [Lesson Topic]" defining the 4-6 most foundational terms needed before anything else in the lesson makes sense, in the same {classification, title, definition, examples} shape as other concepts.
+The first concept in the array must always be a "Start Here · Core Vocabulary" primer titled "The 5%: Basic Vocabulary for [Lesson Topic]" defining the 4-6 most foundational terms needed before anything else in the lesson makes sense, in the same {classification, title, definition, examples} shape as other concepts (its "examples" should also follow the same rule above — usually empty, since vocabulary primers rarely need worked problems).
 
 ${styleInstruction}
 
@@ -287,13 +291,13 @@ app.post('/echo', (req, res) => {
 
 app.post('/generate', async (req, res) => {
     try {
-        const { text, descriptionStyle = 'verbatim' } = req.body
+        const { text, descriptionStyle = 'verbatim', includeExamples = true } = req.body
 
         if (!text || !text.trim()) {
             return res.status(400).json({ error: 'No text provided' })
         }
 
-        const data = await generateModuleContent(text, descriptionStyle)
+        const data = await generateModuleContent(text, descriptionStyle, includeExamples)
         res.json(data)
     } catch (err) {
         console.error(err)
@@ -334,6 +338,7 @@ app.post('/generate-reviewer', async (req, res) => {
         const {
             sources,
             descriptionStyle = 'verbatim',
+            includeExamples = true,
             quizType,
             difficulty
         } = req.body
@@ -346,7 +351,7 @@ app.post('/generate-reviewer', async (req, res) => {
 
         const generatedModules = []
         for (const module of modules) {
-            const content = await generateModuleContent(module.text, descriptionStyle)
+            const content = await generateModuleContent(module.text, descriptionStyle, includeExamples)
             generatedModules.push({ title: module.title, ...content })
         }
 

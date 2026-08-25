@@ -498,6 +498,8 @@ function App() {
   const [descriptionStyle, setDescriptionStyle] = useState('verbatim')
   const [quizTypes, setQuizTypes] = useState({ multipleChoice: false, trueFalse: true })
   const [collapsible, setCollapsible] = useState(true)
+  const [includeFinalTest, setIncludeFinalTest] = useState(true)
+  const [includeExamples, setIncludeExamples] = useState(true)
   const [loadingProgress, setLoadingProgress] = useState(0)
   const [loadingMessage, setLoadingMessage] = useState('Preparing your sources...')
   const canConfigure = sourceFiles.length > 0 || notes.trim().length > 0
@@ -550,7 +552,8 @@ function App() {
         setLoadingProgress(20)
         const modules = modulesData.modules
 
-        const perModuleSpan = 60 / modules.length
+        const moduleSpan = includeFinalTest ? 60 : 78
+        const perModuleSpan = moduleSpan / modules.length
         const generatedModules = []
         for (let i = 0; i < modules.length; i++) {
           if (cancelled) return
@@ -563,7 +566,7 @@ function App() {
           const contentRes = await fetch(`${API_BASE}/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: modules[i].text, descriptionStyle }),
+            body: JSON.stringify({ text: modules[i].text, descriptionStyle, includeExamples }),
           })
           const content = await contentRes.json()
           stopCreep()
@@ -575,19 +578,23 @@ function App() {
           generatedModules.push({ title: modules[i].title, ...content })
         }
 
-        setLoadingMessage('Building your Final Test...')
-        stopCreep = creepProgress(80, 98)
+        let finalTestQuiz = null
+        if (includeFinalTest) {
+          setLoadingMessage('Building your Final Test...')
+          stopCreep = creepProgress(80, 98)
 
-        const finalTestRes = await fetch(`${API_BASE}/test-final-test`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ modules, quizType: quizTypes }),
-        })
-        const finalTestData = await finalTestRes.json()
-        stopCreep()
-        if (cancelled) return
-        if (!finalTestRes.ok) {
-          throw new Error(finalTestData.error || 'Failed to generate the Final Test')
+          const finalTestRes = await fetch(`${API_BASE}/test-final-test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ modules, quizType: quizTypes }),
+          })
+          const finalTestData = await finalTestRes.json()
+          stopCreep()
+          if (cancelled) return
+          if (!finalTestRes.ok) {
+            throw new Error(finalTestData.error || 'Failed to generate the Final Test')
+          }
+          finalTestQuiz = finalTestData.quiz
         }
 
         setLoadingProgress(100)
@@ -601,11 +608,14 @@ function App() {
             title: title.trim() || 'Untitled Reviewer',
             created: formatTimestamp(new Date()),
             modules: generatedModules,
-            finalTest: finalTestData.quiz,
+            finalTest: finalTestQuiz,
             collapsible,
           }
           setReviewers((prev) => [newReviewer, ...prev])
           saveReviewer(newReviewer).catch((err) => console.error('Failed to save reviewer', err))
+          setTitle('')
+          setNotes('')
+          setSourceFiles([])
           setPage('reviewers')
         }, 300)
 
@@ -711,6 +721,8 @@ function App() {
             descriptionStyle={descriptionStyle} setDescriptionStyle={setDescriptionStyle}
             quizTypes={quizTypes} setQuizTypes={setQuizTypes}
             collapsible={collapsible} setCollapsible={setCollapsible}
+            includeFinalTest={includeFinalTest} setIncludeFinalTest={setIncludeFinalTest}
+            includeExamples={includeExamples} setIncludeExamples={setIncludeExamples}
             onFinish={handleFinish}
           />
         )}
@@ -845,6 +857,8 @@ function ConfigurePage(props) {
     descriptionStyle, setDescriptionStyle,
     quizTypes, setQuizTypes,
     collapsible, setCollapsible,
+    includeFinalTest, setIncludeFinalTest,
+    includeExamples, setIncludeExamples,
     onFinish,
   } = props
 
@@ -904,25 +918,44 @@ function ConfigurePage(props) {
                 <p>Let each section expand/collapse individually. Turn off to show everything expanded at once.</p>
               </div>
             </label>
+            <label className="option-item">
+              <input type="checkbox" checked={includeExamples} onChange={() => setIncludeExamples(!includeExamples)} />
+              <div>
+                <strong>Worked examples</strong>
+                <p>Include step-by-step worked examples where a concept actually calls for one (math, formulas, procedures). Turn off to keep the reviewer to straightforward explanations only, with no examples at all.</p>
+              </div>
+            </label>
           </div>
         </div>
 
         <div className="configure-col">
-          <h3>Quiz Type</h3>
-          <p className="hint">Select at least one.</p>
-          <div className="quiz-type-list">
-            <label className="quiz-type-item">
-              <input type="checkbox" checked={quizTypes.multipleChoice} onChange={() => toggleQuiz('multipleChoice')} />
-              Multiple Choice
-            </label>
-            <label className="quiz-type-item">
-              <input type="checkbox" checked={quizTypes.trueFalse} onChange={() => toggleQuiz('trueFalse')} />
-              True or False
+          <h3>Final Test</h3>
+          <div className="option-list">
+            <label className="option-item">
+              <input type="checkbox" checked={includeFinalTest} onChange={() => setIncludeFinalTest(!includeFinalTest)} />
+              <div>
+                <strong>Generate a Final Test</strong>
+                <p>A single test covering every module, generated automatically. Turn off to skip it and finish faster.</p>
+              </div>
             </label>
           </div>
 
-          <h3>Final Test</h3>
-          <p className="hint">A single 60-question test covering every module will be generated automatically.</p>
+          {includeFinalTest && (
+            <>
+              <h3>Quiz Type</h3>
+              <p className="hint">Select at least one.</p>
+              <div className="quiz-type-list">
+                <label className="quiz-type-item">
+                  <input type="checkbox" checked={quizTypes.multipleChoice} onChange={() => toggleQuiz('multipleChoice')} />
+                  Multiple Choice
+                </label>
+                <label className="quiz-type-item">
+                  <input type="checkbox" checked={quizTypes.trueFalse} onChange={() => toggleQuiz('trueFalse')} />
+                  True or False
+                </label>
+              </div>
+            </>
+          )}
         </div>
       </div>
       <div className="page-footer">
