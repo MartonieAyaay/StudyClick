@@ -29,21 +29,22 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.7.0",
+    "nodemon": "^3.1.14",
     "vite": "^8.1.1"
   },
   "build": {
-  "appId": "com.studyclick.app",
-  "productName": "StudyClick",
-  "files": [
-    "dist/**/*",
-    "electron/**/*",
-    "server/**/*",
-    "package.json",
-    "!server/.env"
-  ],
-  "win": {
-    "target": "nsis",
-    "icon": "electron/icon.ico"
+    "appId": "com.studyclick.app",
+    "productName": "StudyClick",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "server/**/*",
+      "package.json",
+      "!server/.env"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "electron/icon.ico"
+    }
   }
-}
 }

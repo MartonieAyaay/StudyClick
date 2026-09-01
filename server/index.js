@@ -5,7 +5,20 @@ require('dotenv').config()
 const { GoogleGenAI } = require('@google/genai')
 const app = express()
 
-app.use(cors())
+const allowedOrigins = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+]
+
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin || origin === 'null' || allowedOrigins.includes(origin)) {
+            callback(null, true)
+        } else {
+            callback(new Error('Not allowed by CORS'))
+        }
+    },
+}))
 app.use(express.json())
 
 function getClient(req) {

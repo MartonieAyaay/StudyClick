@@ -635,7 +635,10 @@ function App() {
             collapsible,
           }
           setReviewers((prev) => [newReviewer, ...prev])
-          saveReviewer(newReviewer).catch((err) => console.error('Failed to save reviewer', err))
+          saveReviewer(newReviewer).catch((err) => {
+            console.error('Failed to save reviewer', err)
+            window.alert(`"${newReviewer.title}" was generated but could not be saved to your library (${err.message || 'unknown error'}). It'll disappear if you refresh — download it now if you want to keep it.`)
+          })
           setTitle('')
           setNotes('')
           setSourceFiles([])
@@ -660,7 +663,10 @@ function App() {
   useEffect(() => {
     getAllReviewers()
       .then(setReviewers)
-      .catch((err) => console.error('Failed to load saved reviewers', err))
+      .catch((err) => {
+        console.error('Failed to load saved reviewers', err)
+        window.alert(`Could not load your saved reviewers (${err.message || 'unknown error'}). They may still be there — try restarting the app.`)
+      })
   }, [])
 
   function goToApp() {
@@ -687,7 +693,11 @@ function App() {
   function handleDeleteReviewer(reviewer) {
     if (!window.confirm(`Delete "${reviewer.title}"? This can't be undone.`)) return
     setReviewers((prev) => prev.filter((r) => r.id !== reviewer.id))
-    deleteReviewer(reviewer.id).catch((err) => console.error('Failed to delete reviewer', err))
+    deleteReviewer(reviewer.id).catch((err) => {
+      console.error('Failed to delete reviewer', err)
+      window.alert(`Could not delete "${reviewer.title}" (${err.message || 'unknown error'}). It's been restored.`)
+      setReviewers((prev) => (prev.some((r) => r.id === reviewer.id) ? prev : [reviewer, ...prev]))
+    })
   }
 
   function handleDownloadReviewer(reviewer) {
@@ -924,15 +934,30 @@ function UploadTitleStep({ title, setTitle, onNext }) {
 
 function UploadSourcesStep({ notes, setNotes, sourceFiles, setSourceFiles, onNext }) {
   const fileInputRef = useRef(null)
+  const [fileError, setFileError] = useState('')
   const canProceed = sourceFiles.length > 0 || notes.trim().length > 0
 
   async function handleFileChange(e) {
     const selected = Array.from(e.target.files)
     e.target.value = ''
+    setFileError('')
 
+    const failed = []
     for (const file of selected) {
-      const text = await extractTextFromPDF(file)
-      setSourceFiles((prev) => [...prev, { file, name: file.name, text }])
+      try {
+        const text = await extractTextFromPDF(file)
+        if (!text || !text.trim()) {
+          failed.push(`${file.name} (no readable text found — is it a scanned/image PDF?)`)
+          continue
+        }
+        setSourceFiles((prev) => [...prev, { file, name: file.name, text }])
+      } catch (err) {
+        console.error('Failed to read PDF', file.name, err)
+        failed.push(`${file.name} (${err.message || 'could not be read'})`)
+      }
+    }
+    if (failed.length > 0) {
+      setFileError(`Couldn't process: ${failed.join(', ')}`)
     }
   }
 
@@ -955,6 +980,7 @@ function UploadSourcesStep({ notes, setNotes, sourceFiles, setSourceFiles, onNex
         <div className="dropzone-icon">📄</div>
         <p>Upload your PDF</p>
       </div>
+      {fileError && <p className="field-error">{fileError}</p>}
       {sourceFiles.length > 0 && (
         <ul className="file-list">
           {sourceFiles.map((s, i) => (

@@ -324,6 +324,15 @@
   margin-bottom: 8px;
 }
 
+.field-error {
+  color: #c0392b;
+  font-size: 12px;
+  margin-top: 8px;
+  text-align: left;
+  width: 100%;
+  max-width: 500px;
+}
+
 .uploadPDF-icon {
   font-size: 24px;
   margin-bottom: 8px;
