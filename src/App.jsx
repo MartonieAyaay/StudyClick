@@ -2,6 +2,13 @@ import { extractTextFromPDF } from './pdfUtils'
 import { useEffect, useState, useRef } from 'react'
 import './App.css'
 import { getAllReviewers, saveReviewer, deleteReviewer } from './db'
+import {
+  getUsage,
+  recordUsage,
+  getRequestStatus,
+  DAILY_REQUEST_LIMIT,
+} from './usageTracker'
+import { getApiKey, saveApiKey } from './apiKeyStore'
 
 function formatTimestamp(date) {
   const hh = String(date.getHours()).padStart(2, '0')
@@ -13,6 +20,12 @@ function formatTimestamp(date) {
 }
 
 const API_BASE = 'http://localhost:3001'
+
+function apiFetch(path, options = {}, apiKey) {
+  const headers = { ...(options.headers || {}) }
+  if (apiKey) headers['x-gemini-api-key'] = apiKey
+  return fetch(`${API_BASE}${path}`, { ...options, headers })
+}
 
 function buildReviewerHTML(reviewer, accentColor) {
   const accent = accentColor || '#7091b8'
@@ -502,6 +515,13 @@ function App() {
   const [includeExamples, setIncludeExamples] = useState(true)
   const [loadingProgress, setLoadingProgress] = useState(0)
   const [loadingMessage, setLoadingMessage] = useState('Preparing your sources...')
+  const [usage, setUsage] = useState(() => getUsage())
+  const [apiKey, setApiKeyState] = useState(() => getApiKey())
+
+  function setApiKey(key) {
+    setApiKeyState(key)
+    saveApiKey(key)
+  }
   const canConfigure = sourceFiles.length > 0 || notes.trim().length > 0
 
   useEffect(() => {
@@ -538,17 +558,18 @@ function App() {
         setLoadingProgress(8)
         stopCreep = creepProgress(8, 20)
 
-        const modulesRes = await fetch(`${API_BASE}/test-modules`, {
+        const modulesRes = await apiFetch('/test-modules', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sources }),
-        })
+        }, apiKey)
         const modulesData = await modulesRes.json()
         stopCreep()
         if (cancelled) return
         if (!modulesRes.ok) {
           throw new Error(modulesData.error || 'Failed to determine modules')
         }
+        if (modulesData.usage) setUsage(recordUsage(modulesData.usage.totalTokens, 1))
         setLoadingProgress(20)
         const modules = modulesData.modules
 
@@ -563,17 +584,18 @@ function App() {
           setLoadingProgress(floor)
           stopCreep = creepProgress(floor, ceiling)
 
-          const contentRes = await fetch(`${API_BASE}/generate`, {
+          const contentRes = await apiFetch('/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: modules[i].text, descriptionStyle, includeExamples }),
-          })
-          const content = await contentRes.json()
+          }, apiKey)
+          const { usage: moduleUsage, ...content } = await contentRes.json()
           stopCreep()
           if (cancelled) return
           if (!contentRes.ok) {
             throw new Error(content.error || `Failed to generate content for "${modules[i].title}"`)
           }
+          if (moduleUsage) setUsage(recordUsage(moduleUsage.totalTokens, 1))
           setLoadingProgress(ceiling)
           generatedModules.push({ title: modules[i].title, ...content })
         }
@@ -583,17 +605,18 @@ function App() {
           setLoadingMessage('Building your Final Test...')
           stopCreep = creepProgress(80, 98)
 
-          const finalTestRes = await fetch(`${API_BASE}/test-final-test`, {
+          const finalTestRes = await apiFetch('/test-final-test', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ modules, quizType: quizTypes }),
-          })
+          }, apiKey)
           const finalTestData = await finalTestRes.json()
           stopCreep()
           if (cancelled) return
           if (!finalTestRes.ok) {
             throw new Error(finalTestData.error || 'Failed to generate the Final Test')
           }
+          if (finalTestData.usage) setUsage(recordUsage(finalTestData.usage.totalTokens, 1))
           finalTestQuiz = finalTestData.quiz
         }
 
@@ -642,7 +665,7 @@ function App() {
 
   function goToApp() {
     setView('app')
-    setPage('upload-title')
+    setPage('dashboard')
   }
 
   function handleFinish() {
@@ -704,6 +727,18 @@ function App() {
     <div className="app-shell" style={{ '--accent': accentColor }}>
       <Sidebar page={page} setPage={setPage} canConfigure={canConfigure} title={title} onNewReviewer={handleNewReviewer} />
       <div className="content">
+        {page === 'dashboard' && (
+          <Dashboard
+            reviewers={reviewers}
+            usage={usage}
+            apiKey={apiKey}
+            onNewReviewer={handleNewReviewer}
+            onGoToSettings={() => setPage('settings')}
+          />
+        )}
+        {page === 'settings' && (
+          <SettingsPage apiKey={apiKey} setApiKey={setApiKey} />
+        )}
         {page === 'upload-title' && (
           <UploadTitleStep title={title} setTitle={setTitle} onNext={() => setPage('upload-sources')} />
         )}
@@ -743,19 +778,22 @@ function App() {
 }
 
 function Sidebar({ page, setPage, canConfigure, title, onNewReviewer }) {
+  const isDashboard = page === 'dashboard'
   const isUpload = page === 'upload-title' || page === 'upload-sources'
   const isConfigure = page === 'configure'
   const isReviewers = page === 'reviewers' || page === 'generating' || page === 'viewer'
+  const isSettings = page === 'settings'
 
   return (
     <div className="sidebar">
       <h2 className="sidebar-logo">StudyClick</h2>
       <nav>
+        <button className={isDashboard ? 'nav-item active' : 'nav-item'} onClick={() => setPage('dashboard')}>Dashboard</button>
         <button
           className={isUpload ? 'nav-item active' : 'nav-item'}
-          onClick={() => setPage(title.trim() ? 'upload-sources' : 'upload-title')}
+          onClick={onNewReviewer}
         >
-          Upload
+          Create New Reviewer
         </button>
         <button
           className={isConfigure ? 'nav-item active' : 'nav-item'}
@@ -766,8 +804,98 @@ function Sidebar({ page, setPage, canConfigure, title, onNewReviewer }) {
           Configure
         </button>
         <button className={isReviewers ? 'nav-item active' : 'nav-item'} onClick={() => setPage('reviewers')}>Reviewers</button>
+        <button className={isSettings ? 'nav-item active' : 'nav-item'} onClick={() => setPage('settings')}>Settings</button>
       </nav>
-      <button className="sidebar-new-btn" onClick={onNewReviewer}>+ New</button>
+    </div>
+  )
+}
+
+function Dashboard({ reviewers, usage, apiKey, onNewReviewer, onGoToSettings }) {
+  const requestStatus = getRequestStatus(usage)
+
+  return (
+    <div className="page">
+      <div className="dashboard-content">
+        <div className="dashboard-header">
+          <h2 className="page-title">Dashboard</h2>
+          <button className="btn-primary" onClick={onNewReviewer}>Create new reviewer</button>
+        </div>
+
+        {!apiKey && (
+          <div className="dashboard-banner">
+            <span>No Gemini API key set yet — generation won't work until you add one.</span>
+            <button className="btn-secondary" onClick={onGoToSettings}>Add key</button>
+          </div>
+        )}
+
+        <div className="dashboard-cards">
+          <div className="dashboard-card">
+            <span>Reviewers generated</span>
+            <strong>{reviewers.length}</strong>
+          </div>
+
+          <div className={`dashboard-card token-card token-${requestStatus.level}`}>
+            <div className="dashboard-card-row">
+              <span>Requests remaining today</span>
+              <strong>{requestStatus.remaining.toLocaleString()} / {DAILY_REQUEST_LIMIT.toLocaleString()}</strong>
+            </div>
+            <p className="dashboard-card-note">{requestStatus.message}</p>
+          </div>
+
+          <div className="dashboard-card">
+            <span>Tokens used today</span>
+            <strong>{usage.tokensUsed.toLocaleString()}</strong>
+          </div>
+        </div>
+
+        <p className="dashboard-disclaimer">
+          Resets daily and only counts what you've generated through StudyClick. Requests are checked against
+          Google's real daily limit — tokens don't have a fixed cap, so that number's just for reference.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function SettingsPage({ apiKey, setApiKey }) {
+  const [draft, setDraft] = useState(apiKey)
+  const [justSaved, setJustSaved] = useState(false)
+  const [visible, setVisible] = useState(false)
+
+  function handleSave() {
+    setApiKey(draft.trim())
+    setJustSaved(true)
+    window.setTimeout(() => setJustSaved(false), 2000)
+  }
+
+  return (
+    <div className="page">
+      <div className="dashboard-content">
+        <h2 className="page-title">Settings</h2>
+
+        <h3 style={{ marginTop: 24 }}>Gemini API key</h3>
+        <p className="hint" style={{ margin: '0 0 12px' }}>
+          StudyClick calls Google's Gemini API using your own key, so it stays free to run. Get one at{' '}
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com/apikey</a>.
+          It's stored only in this browser and sent straight to your own local server, never anywhere else.
+        </p>
+
+        <div className="api-key-row">
+          <input
+            type={visible ? 'text' : 'password'}
+            className="api-key-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Paste your Gemini API key here"
+          />
+          <button className="btn-secondary" onClick={() => setVisible(!visible)}>{visible ? 'Hide' : 'Show'}</button>
+          <button className="btn-primary" onClick={handleSave}>{justSaved ? 'Saved!' : 'Save key'}</button>
+        </div>
+
+        {!apiKey && (
+          <p className="quiz-hint" style={{ marginTop: 12 }}>No key saved yet — reviewer generation won't work until you add one.</p>
+        )}
+      </div>
     </div>
   )
 }

@@ -8,13 +8,30 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
-const ai = new GoogleGenAI({apiKey: process.env.GEMINI_API_KEY})
+function getClient(req) {
+    const key = req.header('x-gemini-api-key') || process.env.GEMINI_API_KEY
+    if (!key || !key.trim()) {
+        const err = new Error('No Gemini API key set. Add one in StudyClick under Settings, or set GEMINI_API_KEY in server/.env.')
+        err.status = 400
+        throw err
+    }
+    return new GoogleGenAI({ apiKey: key.trim() })
+}
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function generateWithRetry(params, maxRetries = 3) {
+function extractUsage(response) {
+    const u = (response && response.usageMetadata) || {}
+    return {
+        promptTokens: u.promptTokenCount || 0,
+        outputTokens: u.candidatesTokenCount || 0,
+        totalTokens: u.totalTokenCount || 0,
+    }
+}
+
+async function generateWithRetry(ai, params, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             return await ai.models.generateContent(params)
@@ -30,7 +47,7 @@ async function generateWithRetry(params, maxRetries = 3) {
     }
 }
 
-async function generateModuleContent(text, descriptionStyle = 'verbatim', includeExamples = true) {
+async function generateModuleContent(ai, text, descriptionStyle = 'verbatim', includeExamples = true) {
     if (descriptionStyle !== 'verbatim' && descriptionStyle !== 'paraphrase') {
         throw new Error('Select either verbatim or paraphrase')
     }
@@ -65,7 +82,7 @@ ${styleInstruction}
 Lesson content:
 ${text}`
 
-    const response = await generateWithRetry({
+    const response = await generateWithRetry(ai, {
         model: 'gemini-flash-lite-latest',
         contents: prompt,
         config: {
@@ -156,20 +173,23 @@ ${text}`
         throw new Error('Gemini returned no concepts for this module. Please try generating again.')
     }
 
-    return data
+    return { data, usage: extractUsage(response) }
 }
 
-async function determineModules(sources) {
+async function determineModules(ai, sources) {
     if (sources.length > 1) {
-        return sources.map((source) => ({
-            title: source.name,
-            text: source.text,
-        }))
+        return {
+            modules: sources.map((source) => ({
+                title: source.name,
+                text: source.text,
+            })),
+            usage: { promptTokens: 0, outputTokens: 0, totalTokens: 0 },
+        }
     }
 
     const singleText = sources[0].text
 
-    const response = await generateWithRetry({
+    const response = await generateWithRetry(ai, {
         model: 'gemini-flash-lite-latest',
         contents: `The following is study material that may cover one single topic, or may contain multiple distinct lessons or modules. If it covers multiple distinct topics, split into separate modules, each with a short descriptive title with the exact portion of the original text belonging to that module (do not alter text, just split it). If it is a single cohesive topic, return it as one module that contains the entire text.\n\nMaterial:\n${singleText}`,
         config: {
@@ -195,10 +215,10 @@ async function determineModules(sources) {
     })
 
     const data = JSON.parse(response.text)
-    return data.modules
+    return { modules: data.modules, usage: extractUsage(response) }
 }
 
-async function generateFinalTest(modules, quizType = {}, difficulty = 'Easy') {
+async function generateFinalTest(ai, modules, quizType = {}, difficulty = 'Easy') {
     const wantsMultipleChoice = Boolean(quizType.multipleChoice)
     const wantsTrueFalse = Boolean(quizType.trueFalse)
 
@@ -218,7 +238,7 @@ async function generateFinalTest(modules, quizType = {}, difficulty = 'Easy') {
 
     const prompt = `The following study material contains multiple modules/lessons. Generate a single final test with exactly ${totalQuestions} questions at ${difficulty} difficulty, drawing questions from across ALL modules as evenly as possible, using only these question types: ${quizTypesText}. For multiple choice questions, set "type" to "multiple-choice" and include an "options" array with 4 choices. For true/false questions, set "type" to "true-false" and omit "options". "correctAnswer" must exactly match the correct option text for multiple choice, or be "True"/"False" for true/false questions.\n\nStudy material:\n${combinedMaterial}`
 
-    const response = await generateWithRetry({
+    const response = await generateWithRetry(ai, {
         model: 'gemini-flash-lite-latest',
         contents: prompt,
         config: {
@@ -264,7 +284,7 @@ async function generateFinalTest(modules, quizType = {}, difficulty = 'Easy') {
         throw new Error('Gemini returned no questions for the Final Test. Please try again.')
     }
 
-    return data.quiz
+    return { quiz: data.quiz, usage: extractUsage(response) }
 }
 
 app.get('/', (req, res) => {
@@ -273,6 +293,7 @@ app.get('/', (req, res) => {
 
 app.get('/test-ai', async (req, res) => {
     try {
+        const ai = getClient(req)
         const response = await ai.models.generateContent({
             model: 'gemini-flash-lite-latest',
             contents: 'say a simple one sentence greeting message to the user in a friendly tone',
@@ -280,7 +301,16 @@ app.get('/test-ai', async (req, res) => {
         res.send(response.text)
     } catch (err) {
         console.error(err)
-        res.status(500).send('Something went wrong calling gemini')
+        res.status(err.status || 500).send(err.message || 'Something went wrong calling gemini')
+    }
+})
+
+app.get('/has-api-key', (req, res) => {
+    try {
+        getClient(req)
+        res.json({ hasKey: true })
+    } catch (err) {
+        res.json({ hasKey: false })
     }
 })
 
@@ -291,50 +321,54 @@ app.post('/echo', (req, res) => {
 
 app.post('/generate', async (req, res) => {
     try {
+        const ai = getClient(req)
         const { text, descriptionStyle = 'verbatim', includeExamples = true } = req.body
 
         if (!text || !text.trim()) {
             return res.status(400).json({ error: 'No text provided' })
         }
 
-        const data = await generateModuleContent(text, descriptionStyle, includeExamples)
-        res.json(data)
+        const { data, usage } = await generateModuleContent(ai, text, descriptionStyle, includeExamples)
+        res.json({ ...data, usage })
     } catch (err) {
         console.error(err)
-        res.status(500).json({ error: err.message || 'Failed to generate reviewer content' })
+        res.status(err.status || 500).json({ error: err.message || 'Failed to generate reviewer content' })
     }
 })
 
 app.post('/test-modules', async (req, res) => {
     try {
+        const ai = getClient(req)
         const { sources } = req.body
         if (!sources || sources.length === 0) {
             return res.status(400).json({ error: 'No sources provided' })
         }
-        const modules = await determineModules(sources)
-        res.json({ modules })
+        const { modules, usage } = await determineModules(ai, sources)
+        res.json({ modules, usage })
     } catch (err) {
         console.error(err)
-        res.status(500).json({ error: 'Failed to determine modules' })
+        res.status(err.status || 500).json({ error: err.message || 'Failed to determine modules' })
     }
 })
 
 app.post('/test-final-test', async (req, res) => {
     try {
+        const ai = getClient(req)
         const { modules, quizType, difficulty } = req.body
         if (!modules || modules.length === 0) {
             return res.status(400).json({ error: 'No modules provided' })
         }
-        const quiz = await generateFinalTest(modules, quizType, difficulty)
-        res.json({ quiz })
+        const { quiz, usage } = await generateFinalTest(ai, modules, quizType, difficulty)
+        res.json({ quiz, usage })
     } catch (err) {
         console.error(err)
-        res.status(500).json({ error: err.message || 'Failed to generate final test' })
+        res.status(err.status || 500).json({ error: err.message || 'Failed to generate final test' })
     }
 })
 
 app.post('/generate-reviewer', async (req, res) => {
     try {
+        const ai = getClient(req)
         const {
             sources,
             descriptionStyle = 'verbatim',
@@ -347,20 +381,26 @@ app.post('/generate-reviewer', async (req, res) => {
             return res.status(400).json({ error: 'No sources provided' })
         }
 
-        const modules = await determineModules(sources)
+        const { modules, usage: modulesUsage } = await determineModules(ai, sources)
+        let totalTokens = modulesUsage.totalTokens
+        let totalRequests = 1
 
         const generatedModules = []
         for (const module of modules) {
-            const content = await generateModuleContent(module.text, descriptionStyle, includeExamples)
-            generatedModules.push({ title: module.title, ...content })
+            const { data, usage } = await generateModuleContent(ai, module.text, descriptionStyle, includeExamples)
+            generatedModules.push({ title: module.title, ...data })
+            totalTokens += usage.totalTokens
+            totalRequests += 1
         }
 
-        const finalTest = await generateFinalTest(modules, quizType, difficulty)
+        const { quiz: finalTest, usage: finalUsage } = await generateFinalTest(ai, modules, quizType, difficulty)
+        totalTokens += finalUsage.totalTokens
+        totalRequests += 1
 
-        res.json({ modules: generatedModules, finalTest })
+        res.json({ modules: generatedModules, finalTest, usage: { totalTokens, totalRequests } })
     } catch (err) {
         console.error(err)
-        res.status(500).json({ error: err.message || 'Failed to generate reviewer' })
+        res.status(err.status || 500).json({ error: err.message || 'Failed to generate reviewer' })
     }
 })
 
