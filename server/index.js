@@ -49,7 +49,17 @@ async function generateWithRetry(ai, params, maxRetries = 3) {
         try {
             return await ai.models.generateContent(params)
         } catch (err) {
-            const isOverloaded = String(err).includes('503') || String(err).includes('UNAVAILABLE') || String(err).includes('fetch failed') || String(err).includes('Timeout') || String(err).includes('429') || String(err).includes('RESOURCE_EXHAUSTED')
+            const message = String(err)
+            const isResourceExhausted = message.includes('RESOURCE_EXHAUSTED') || message.includes('429')
+            const isDailyQuotaExhausted = isResourceExhausted && /perday/i.test(message.replace(/[\s_-]/g, ''))
+
+            if (isDailyQuotaExhausted) {
+                const quotaErr = new Error("You've used up today's free Gemini request limit. It resets at midnight Pacific time — try again later, or add a different API key in Settings.")
+                quotaErr.status = 429
+                throw quotaErr
+            }
+
+            const isOverloaded = message.includes('503') || message.includes('UNAVAILABLE') || message.includes('fetch failed') || message.includes('Timeout') || isResourceExhausted
             if (isOverloaded && attempt < maxRetries) {
                 console.log(`Gemini overloaded. Retrying (attempt ${attempt})...`)
                 await delay(1000 * attempt)
@@ -60,7 +70,95 @@ async function generateWithRetry(ai, params, maxRetries = 3) {
     }
 }
 
+const CHUNK_CHAR_THRESHOLD = 18000
+
+function splitTextIntoChunks(text, maxChars) {
+    const paragraphs = text.split(/\n\s*\n/)
+    const chunks = []
+    let current = ''
+    for (const para of paragraphs) {
+        if (current && (current + '\n\n' + para).length > maxChars) {
+            chunks.push(current.trim())
+            current = para
+        } else {
+            current = current ? current + '\n\n' + para : para
+        }
+    }
+    if (current.trim()) chunks.push(current.trim())
+
+    const final = []
+    for (const chunk of chunks) {
+        if (chunk.length <= maxChars) {
+            final.push(chunk)
+        } else {
+            for (let i = 0; i < chunk.length; i += maxChars) {
+                final.push(chunk.slice(i, i + maxChars))
+            }
+        }
+    }
+    return final
+}
+
+function dedupeBy(items, keyFn) {
+    const seen = new Set()
+    const result = []
+    for (const item of items) {
+        const key = keyFn(item)
+        if (!seen.has(key)) {
+            seen.add(key)
+            result.push(item)
+        }
+    }
+    return result
+}
+
+function isStartHereConcept(concept) {
+    return /start here|basic vocabulary/i.test(`${concept.classification} ${concept.title}`)
+}
+
 async function generateModuleContent(ai, text, descriptionStyle = 'verbatim', includeExamples = true) {
+    if (text.length > CHUNK_CHAR_THRESHOLD) {
+        return generateChunkedModuleContent(ai, text, descriptionStyle, includeExamples)
+    }
+    return generateModuleContentSingle(ai, text, descriptionStyle, includeExamples)
+}
+
+async function generateChunkedModuleContent(ai, text, descriptionStyle, includeExamples) {
+    const chunks = splitTextIntoChunks(text, CHUNK_CHAR_THRESHOLD)
+    let combined = null
+    const totalUsage = { promptTokens: 0, outputTokens: 0, totalTokens: 0 }
+
+    for (const chunk of chunks) {
+        const { data, usage } = await generateModuleContentSingle(ai, chunk, descriptionStyle, includeExamples)
+        totalUsage.promptTokens += usage.promptTokens
+        totalUsage.outputTokens += usage.outputTokens
+        totalUsage.totalTokens += usage.totalTokens
+
+        if (!combined) {
+            combined = data
+            continue
+        }
+
+        combined.keyConcepts.vital = dedupeBy(
+            [...combined.keyConcepts.vital, ...data.keyConcepts.vital],
+            (item) => item.idea.toLowerCase()
+        ).slice(0, 6)
+
+        combined.keyConcepts.glossary = dedupeBy(
+            [...combined.keyConcepts.glossary, ...data.keyConcepts.glossary],
+            (item) => item.term.toLowerCase()
+        )
+
+        combined.concepts = [
+            ...combined.concepts,
+            ...data.concepts.filter((c) => !isStartHereConcept(c)),
+        ]
+    }
+
+    return { data: combined, usage: totalUsage }
+}
+
+async function generateModuleContentSingle(ai, text, descriptionStyle = 'verbatim', includeExamples = true) {
     if (descriptionStyle !== 'verbatim' && descriptionStyle !== 'paraphrase') {
         throw new Error('Select either verbatim or paraphrase')
     }
@@ -78,10 +176,10 @@ async function generateModuleContent(ai, text, descriptionStyle = 'verbatim', in
 1. SUMMARY: a short, high-level overview of the lesson in exactly 3 to 5 sentences, one tight paragraph. Just orient the student on what this lesson covers and why it matters — do not try to explain every concept in detail here, that's what the Key Concepts and Concepts sections below are for. Keep it concise even if the source material is long.
 
 2. KEY CONCEPTS:
-- "vital": the 4-6 most important high-level ideas from this lesson, each as {idea, why} where "idea" is a punchy one-sentence statement and "why" explains in a sentence why it matters or how it connects to the rest of the material. This must NEVER be empty.
-- "glossary": a complete plain-English glossary covering every important term, name, date, formula, or concept mentioned in the lesson that a student could be tested on. Do not artificially limit the count — include as many as are genuinely present in the material, but always at least 5. Each entry is {term, def} with a short, clear, plain-English definition. This must NEVER be empty.
+- "vital": the most important high-level ideas from this lesson, each as {idea, why} where "idea" is a punchy one-sentence statement and "why" explains in a sentence why it matters or how it connects to the rest of the material. Scale this to how much is actually here — typically 3 to 6, fewer for a narrow or short lesson, more only if the material genuinely supports it. Never leave this empty, but never pad it with filler ideas just to hit a count either.
+- "glossary": a complete plain-English glossary covering every important term, name, date, formula, or concept mentioned in the lesson that a student could be tested on. Include exactly as many as are genuinely present in the material — that could be 2 for a very short lesson, or 30+ for a dense one. Each entry is {term, def} with a short, clear, plain-English definition. Never leave this empty, but never invent filler entries just to reach a count.
 
-3. CONCEPTS: break the lesson down into individual teachable concepts, closely mirroring how the source material itself is organized into distinct definitions, rules, theorems, or methods. You MUST generate at least 5 concepts and no more than 15. This array must NEVER be empty. For EACH concept generate:
+3. CONCEPTS: break the lesson down into individual teachable concepts, closely mirroring how the source material itself is organized into distinct definitions, rules, theorems, or methods. Scale the number of concepts to how much distinct material genuinely exists — a short, narrow lesson might only have 2 or 3 real concepts, while a dense chapter could have 15 or more. Never split one idea into multiple entries just to pad the count, and never omit a real distinct concept just to keep the count low. This array must NEVER be empty. For EACH concept generate:
 - "classification": a short tag describing the kind of concept (e.g. "Definition", "Theorem", "Method", "Algorithm", "Notation"), optionally with a subtopic label like "Definition · Subtopic 1"
 - "title": a short, descriptive title
 - "definition": a thorough explanation, using an HTML unordered list (<ul class="def-list"><li>...</li></ul>) if it has multiple parts, rules, or steps. Stay faithful to the source material's own explanation.
@@ -231,6 +329,12 @@ async function determineModules(ai, sources) {
     return { modules: data.modules, usage: extractUsage(response) }
 }
 
+function computeQuestionCount(modules) {
+    const totalChars = modules.reduce((sum, m) => sum + m.text.length, 0)
+    const scaled = modules.length * 8 + Math.floor(totalChars / 800)
+    return Math.max(15, Math.min(60, scaled))
+}
+
 async function generateFinalTest(ai, modules, quizType = {}, difficulty = 'Easy') {
     const wantsMultipleChoice = Boolean(quizType.multipleChoice)
     const wantsTrueFalse = Boolean(quizType.trueFalse)
@@ -239,7 +343,7 @@ async function generateFinalTest(ai, modules, quizType = {}, difficulty = 'Easy'
         throw new Error('Select at least one quiz type')
     }
 
-    const totalQuestions = 60
+    const totalQuestions = computeQuestionCount(modules)
     const quizTypesText = [
         wantsMultipleChoice ? 'multiple choice' : null,
         wantsTrueFalse ? 'true or false' : null,

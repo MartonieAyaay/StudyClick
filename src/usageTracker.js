@@ -1,6 +1,6 @@
 const STORAGE_KEY = 'studyclick_usage_v1'
 
-export const DAILY_REQUEST_LIMIT = 1000
+export const DAILY_REQUEST_LIMIT = 1500
 
 function todayKey() {
   const d = new Date()

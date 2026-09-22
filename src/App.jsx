@@ -1,5 +1,5 @@
 import { extractTextFromPDF } from './pdfUtils'
-import { useEffect, useState, useRef } from 'react'
+import { Component, useEffect, useState, useRef } from 'react'
 import './App.css'
 import { getAllReviewers, saveReviewer, deleteReviewer } from './db'
 import {
@@ -21,10 +21,14 @@ function formatTimestamp(date) {
 
 const API_BASE = 'http://localhost:3001'
 
-function apiFetch(path, options = {}, apiKey) {
+async function apiFetch(path, options = {}, apiKey) {
   const headers = { ...(options.headers || {}) }
   if (apiKey) headers['x-gemini-api-key'] = apiKey
-  return fetch(`${API_BASE}${path}`, { ...options, headers })
+  try {
+    return await fetch(`${API_BASE}${path}`, { ...options, headers })
+  } catch (err) {
+    throw new Error("Can't reach the local server — make sure it's running (check the terminal you started the backend in).")
+  }
 }
 
 function buildReviewerHTML(reviewer, accentColor) {
@@ -506,6 +510,7 @@ function App() {
   const [sourceFiles, setSourceFiles] = useState([])
   const [reviewers, setReviewers] = useState([])
   const [generationError, setGenerationError] = useState(null)
+  const [generationAttempt, setGenerationAttempt] = useState(0)
   const [selectedReviewer, setSelectedReviewer] = useState(null)
   const [accentColor, setAccentColor] = useState('#7091b8')
   const [descriptionStyle, setDescriptionStyle] = useState('verbatim')
@@ -658,7 +663,7 @@ function App() {
       cancelled = true
       if (stopCreep) stopCreep()
     }
-  }, [page])
+  }, [page, generationAttempt])
 
   useEffect(() => {
     getAllReviewers()
@@ -674,7 +679,31 @@ function App() {
     setPage('dashboard')
   }
 
+  const CHUNK_CHAR_THRESHOLD = 18000
+
+  function estimateRequestsNeeded() {
+    const allSources = sourceFiles.map((s) => s.text)
+    if (notes.trim()) allSources.push(notes.trim())
+    const sourceCount = allSources.length
+    const moduleDetectionCalls = sourceCount > 1 ? 0 : 1
+    const estimatedModuleCalls = sourceCount > 1
+      ? allSources.reduce((sum, text) => sum + Math.max(1, Math.ceil(text.length / CHUNK_CHAR_THRESHOLD)), 0)
+      : Math.max(1, Math.ceil((allSources[0] || '').length / CHUNK_CHAR_THRESHOLD))
+    const finalTestCalls = includeFinalTest ? 1 : 0
+    return moduleDetectionCalls + estimatedModuleCalls + finalTestCalls
+  }
+
   function handleFinish() {
+    const needed = estimateRequestsNeeded()
+    const remaining = DAILY_REQUEST_LIMIT - getUsage().requestsUsed
+    if (needed > remaining) {
+      const proceed = window.confirm(
+        `This reviewer will need roughly ${needed} Gemini requests, but you have about ${Math.max(remaining, 0)} left today on the free tier (resets at midnight Pacific time). It may fail partway through if you run out. Generate anyway?`
+      )
+      if (!proceed) return
+    }
+    setGenerationError(null)
+    setGenerationAttempt((n) => n + 1)
     setPage('generating')
   }
 
@@ -1558,4 +1587,40 @@ function ReviewerViewer({ reviewer, onBack }) {
   )
 }
 
-export default App
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false }
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Unhandled render error', error, info)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="page" style={{ textAlign: 'center', marginTop: '80px' }}>
+          <h2 className="page-title">Something went wrong</h2>
+          <p className="empty-state">StudyClick hit an unexpected error and couldn't continue. Reloading usually fixes it — your saved reviewers are stored locally and are safe.</p>
+          <button className="btn-primary" onClick={() => window.location.reload()}>Reload</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function StudyClickApp() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  )
+}
+
+export default StudyClickApp
