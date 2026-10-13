@@ -28,7 +28,7 @@ function getClient(req) {
         err.status = 400
         throw err
     }
-    return new GoogleGenAI({ apiKey: key.trim() })
+    return new GoogleGenAI({ apiKey: key.trim(), httpOptions: { timeout: 120000 } })
 }
 
 function delay(ms) {
@@ -41,13 +41,18 @@ function extractUsage(response) {
         promptTokens: u.promptTokenCount || 0,
         outputTokens: u.candidatesTokenCount || 0,
         totalTokens: u.totalTokenCount || 0,
+        requests: 1,
     }
 }
 
-async function generateWithRetry(ai, params, maxRetries = 3) {
+const FALLBACK_MODEL = 'gemini-2.5-flash-lite'
+
+async function generateWithRetry(ai, params, maxRetries = 5) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            return await ai.models.generateContent(params)
+            // From the 3rd attempt on, switch to a fallback model in case the primary one is overloaded.
+            const callParams = attempt >= 3 ? { ...params, model: FALLBACK_MODEL } : params
+            return await ai.models.generateContent(callParams)
         } catch (err) {
             const message = String(err)
             const isResourceExhausted = message.includes('RESOURCE_EXHAUSTED') || message.includes('429')
@@ -61,8 +66,13 @@ async function generateWithRetry(ai, params, maxRetries = 3) {
 
             const isOverloaded = message.includes('503') || message.includes('UNAVAILABLE') || message.includes('fetch failed') || message.includes('Timeout') || isResourceExhausted
             if (isOverloaded && attempt < maxRetries) {
-                console.log(`Gemini overloaded. Retrying (attempt ${attempt})...`)
-                await delay(1000 * attempt)
+                const wait = 2000 * 2 ** (attempt - 1) + Math.random() * 500
+                console.log(`Gemini overloaded. Retrying (attempt ${attempt}) in ${Math.round(wait)}ms...`)
+                await delay(wait)
+            } else if (isOverloaded) {
+                const busyErr = new Error('Gemini is overloaded right now (a Google-side issue, not your setup). Wait a minute and press Try Again — your finished modules are kept.')
+                busyErr.status = 503
+                throw busyErr
             } else {
                 throw err
             }
@@ -126,13 +136,14 @@ async function generateModuleContent(ai, text, descriptionStyle = 'verbatim', in
 async function generateChunkedModuleContent(ai, text, descriptionStyle, includeExamples) {
     const chunks = splitTextIntoChunks(text, CHUNK_CHAR_THRESHOLD)
     let combined = null
-    const totalUsage = { promptTokens: 0, outputTokens: 0, totalTokens: 0 }
+    const totalUsage = { promptTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 }
 
     for (const chunk of chunks) {
         const { data, usage } = await generateModuleContentSingle(ai, chunk, descriptionStyle, includeExamples)
         totalUsage.promptTokens += usage.promptTokens
         totalUsage.outputTokens += usage.outputTokens
         totalUsage.totalTokens += usage.totalTokens
+        totalUsage.requests += usage.requests
 
         if (!combined) {
             combined = data
@@ -287,6 +298,31 @@ ${text}`
     return { data, usage: extractUsage(response) }
 }
 
+const MODULE_DETECTION_MIN_CHARS = 8000
+
+function splitByAnchors(text, detected) {
+    const found = []
+    let cursor = 0
+    for (const m of detected) {
+        const anchor = (m.startsWith || '').trim()
+        if (!anchor) continue
+        let idx = text.indexOf(anchor, cursor)
+        if (idx === -1 && anchor.length > 30) idx = text.indexOf(anchor.slice(0, 30), cursor)
+        if (idx === -1) continue
+        found.push({ title: m.title, idx })
+        cursor = idx + 1
+    }
+    if (found.length < 2) return null
+    found[0].idx = 0
+    const modules = found
+        .map((f, i) => ({
+            title: f.title,
+            text: text.slice(f.idx, i + 1 < found.length ? found[i + 1].idx : text.length).trim(),
+        }))
+        .filter((m) => m.text)
+    return modules.length >= 2 ? modules : null
+}
+
 async function determineModules(ai, sources) {
     if (sources.length > 1) {
         return {
@@ -294,39 +330,70 @@ async function determineModules(ai, sources) {
                 title: source.name,
                 text: source.text,
             })),
-            usage: { promptTokens: 0, outputTokens: 0, totalTokens: 0 },
+            usage: { promptTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 },
         }
     }
 
     const singleText = sources[0].text
+    const rawName = sources[0].name || 'Lesson'
+    const fallbackTitle = rawName.replace(/\.pdf$/i, '')
+    const wholeTextModule = [{ title: fallbackTitle, text: singleText }]
 
-    const response = await generateWithRetry(ai, {
-        model: 'gemini-flash-lite-latest',
-        contents: `The following is study material that may cover one single topic, or may contain multiple distinct lessons or modules. If it covers multiple distinct topics, split into separate modules, each with a short descriptive title with the exact portion of the original text belonging to that module (do not alter text, just split it). If it is a single cohesive topic, return it as one module that contains the entire text.\n\nMaterial:\n${singleText}`,
-        config: {
-            responseMimeType: 'application/json',
-            responseJsonSchema: {
-                type: 'object',
-                properties: {
-                    modules: {
-                        type: 'array',
-                        items: {
-                            type: 'object',
-                            properties: {
-                                title: { type: 'string' },
-                                text: { type: 'string' },
+    if (singleText.length < MODULE_DETECTION_MIN_CHARS) {
+        return {
+            modules: wholeTextModule,
+            usage: { promptTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 },
+        }
+    }
+
+    let response
+    try {
+        response = await generateWithRetry(ai, {
+            model: 'gemini-flash-lite-latest',
+            contents: `The following is study material that may cover one single topic, or may contain several distinct lessons or modules. Identify the distinct lessons in order. For each one return a short descriptive "title" and "startsWith": the first 40 to 80 characters of that lesson copied EXACTLY, character for character, as they appear in the material below (do not alter, fix or paraphrase them). If the material is a single cohesive topic, return exactly one module. Return at most 12 modules.\n\nMaterial:\n${singleText}`,
+            config: {
+                responseMimeType: 'application/json',
+                responseJsonSchema: {
+                    type: 'object',
+                    properties: {
+                        modules: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    title: { type: 'string' },
+                                    startsWith: { type: 'string' },
+                                },
+                                required: ['title', 'startsWith'],
                             },
-                            required: ['title', 'text'],
                         },
                     },
+                    required: ['modules'],
                 },
-                required: ['modules'],
+                maxOutputTokens: 2048,
             },
-        },
-    })
+        })
+    } catch (err) {
+        if (err && err.status === 429) throw err
+        console.error('[determineModules] Detection failed, using whole text as one module:', err)
+        return {
+            modules: wholeTextModule,
+            usage: { promptTokens: 0, outputTokens: 0, totalTokens: 0, requests: 1 },
+        }
+    }
 
-    const data = JSON.parse(response.text)
-    return { modules: data.modules, usage: extractUsage(response) }
+    let detected = []
+    try {
+        detected = JSON.parse(response.text).modules || []
+    } catch (err) {
+        console.error('[determineModules] Could not parse detection result, using whole text as one module.')
+    }
+
+    const split = splitByAnchors(singleText, detected)
+    return {
+        modules: split || wholeTextModule,
+        usage: extractUsage(response),
+    }
 }
 
 function computeQuestionCount(modules) {

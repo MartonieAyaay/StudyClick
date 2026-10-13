@@ -556,7 +556,7 @@ function HeroLanding({ accentColor, onGetStarted }) {
       <HeroFxLayer />
 
       <div className="hero-topbar">
-        <div className="hero-brand"><img src="./studyclick-icon.png" alt="" className="hero-brand-icon" /><span className="hero-logo">StudyClick</span></div>
+        <div className="hero-brand"><img src="./studyclick-logo.png" alt="" className="hero-brand-icon" /><span className="hero-logo">StudyClick</span></div>
       </div>
 
       <div className="hero-grid">
@@ -670,6 +670,10 @@ function App() {
   const [reviewers, setReviewers] = useState([])
   const [generationError, setGenerationError] = useState(null)
   const [generationAttempt, setGenerationAttempt] = useState(0)
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [genDone, setGenDone] = useState(false)
+  const pageRef = useRef(page)
+  pageRef.current = page
   const [selectedReviewer, setSelectedReviewer] = useState(null)
   const [accentColor, setAccentColor] = useState('#7091b8')
   const [descriptionStyle, setDescriptionStyle] = useState('verbatim')
@@ -681,6 +685,17 @@ function App() {
   const [loadingMessage, setLoadingMessage] = useState('Preparing your sources...')
   const [usage, setUsage] = useState(() => getUsage())
   const [apiKey, setApiKeyState] = useState(() => getApiKey())
+  const [serverHasKey, setServerHasKey] = useState(false)
+  const runIdRef = useRef(0)
+  const abortRef = useRef(null)
+  const genRef = useRef({ sourcesKey: null, moduleKey: null, testKey: null, plan: null, completed: [], finalTest: null })
+
+  useEffect(() => {
+    apiFetch('/has-api-key')
+      .then((res) => res.json())
+      .then((data) => setServerHasKey(Boolean(data.hasKey)))
+      .catch(() => setServerHasKey(false))
+  }, [])
 
   function setApiKey(key) {
     setApiKeyState(key)
@@ -689,13 +704,41 @@ function App() {
   const canConfigure = sourceFiles.length > 0 || notes.trim().length > 0
 
   useEffect(() => {
-    if (page !== 'generating') return
+    if (!isGenerating) return
 
-    setLoadingProgress(0)
+    const myRun = ++runIdRef.current
+    const controller = new AbortController()
+    abortRef.current = controller
+    const isStale = () => runIdRef.current !== myRun
+
+    const sources = sourceFiles.map((s) => ({ title: (s.title || s.name.replace(/\.pdf$/i, '')).trim() || 'Untitled Module', text: s.text }))
+    if (notes.trim()) {
+      sources.push({ title: 'Pasted Notes', text: notes.trim() })
+    }
+    const sourcesKey = sources.map((s) => `${s.title}:${s.text.length}`).join('|')
+    const moduleKey = JSON.stringify([descriptionStyle, includeExamples])
+    const testKey = JSON.stringify([includeFinalTest, quizTypes])
+
+    const progress = genRef.current
+    if (progress.sourcesKey !== sourcesKey) {
+      genRef.current = { sourcesKey, moduleKey, testKey, plan: null, completed: [], finalTest: null }
+    } else {
+      if (progress.moduleKey !== moduleKey) {
+        progress.moduleKey = moduleKey
+        progress.completed = []
+        progress.finalTest = null
+      }
+      if (progress.testKey !== testKey) {
+        progress.testKey = testKey
+        progress.finalTest = null
+      }
+    }
+    const gen = genRef.current
+
+    setLoadingProgress(gen.completed.length ? 20 : 0)
     setLoadingMessage('Preparing your sources...')
     setGenerationError(null)
 
-    let cancelled = false
     let stopCreep = null
 
     // Ticks the progress bar smoothly from `floor` toward `ceiling` (never
@@ -712,36 +755,17 @@ function App() {
     }
 
     async function runGeneration() {
-      const sources = sourceFiles.map((s) => ({ name: s.name, text: s.text }))
-      if (notes.trim()) {
-        sources.push({ name: 'Pasted Notes', text: notes.trim() })
-      }
-
       try {
-        setLoadingMessage('Splitting your sources into modules...')
-        setLoadingProgress(8)
-        stopCreep = creepProgress(8, 20)
-
-        const modulesRes = await apiFetch('/test-modules', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sources }),
-        }, apiKey)
-        const modulesData = await modulesRes.json()
-        stopCreep()
-        if (cancelled) return
-        if (!modulesRes.ok) {
-          throw new Error(modulesData.error || 'Failed to determine modules')
+        if (!gen.plan) {
+          gen.plan = sources.map((src) => ({ title: src.title, text: src.text }))
         }
-        if (modulesData.usage) setUsage(recordUsage(modulesData.usage.totalTokens, 1))
         setLoadingProgress(20)
-        const modules = modulesData.modules
+        const modules = gen.plan
 
         const moduleSpan = includeFinalTest ? 60 : 78
         const perModuleSpan = moduleSpan / modules.length
-        const generatedModules = []
-        for (let i = 0; i < modules.length; i++) {
-          if (cancelled) return
+        for (let i = gen.completed.length; i < modules.length; i++) {
+          if (isStale()) return
           const floor = 20 + i * perModuleSpan
           const ceiling = 20 + (i + 1) * perModuleSpan
           setLoadingMessage(`Generating content for "${modules[i].title}" (${i + 1}/${modules.length})...`)
@@ -752,49 +776,56 @@ function App() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: modules[i].text, descriptionStyle, includeExamples }),
+            signal: controller.signal,
           }, apiKey)
           const { usage: moduleUsage, ...content } = await contentRes.json()
           stopCreep()
-          if (cancelled) return
+          if (isStale()) return
           if (!contentRes.ok) {
             throw new Error(content.error || `Failed to generate content for "${modules[i].title}"`)
           }
-          if (moduleUsage) setUsage(recordUsage(moduleUsage.totalTokens, 1))
+          if (moduleUsage) setUsage(recordUsage(moduleUsage.totalTokens, moduleUsage.requests ?? 1))
           setLoadingProgress(ceiling)
-          generatedModules.push({ title: modules[i].title, ...content })
+          gen.completed.push({ title: modules[i].title, sourceText: modules[i].text, ...content })
         }
 
         let finalTestQuiz = null
         if (includeFinalTest) {
-          setLoadingMessage('Building your Final Test...')
-          stopCreep = creepProgress(80, 98)
+          if (gen.finalTest) {
+            finalTestQuiz = gen.finalTest
+          } else {
+            setLoadingMessage('Building your Final Test...')
+            stopCreep = creepProgress(80, 98)
 
-          const finalTestRes = await apiFetch('/test-final-test', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modules, quizType: quizTypes }),
-          }, apiKey)
-          const finalTestData = await finalTestRes.json()
-          stopCreep()
-          if (cancelled) return
-          if (!finalTestRes.ok) {
-            throw new Error(finalTestData.error || 'Failed to generate the Final Test')
+            const finalTestRes = await apiFetch('/test-final-test', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ modules, quizType: quizTypes }),
+              signal: controller.signal,
+            }, apiKey)
+            const finalTestData = await finalTestRes.json()
+            stopCreep()
+            if (isStale()) return
+            if (!finalTestRes.ok) {
+              throw new Error(finalTestData.error || 'Failed to generate the Final Test')
+            }
+            if (finalTestData.usage) setUsage(recordUsage(finalTestData.usage.totalTokens, finalTestData.usage.requests ?? 1))
+            finalTestQuiz = finalTestData.quiz
+            gen.finalTest = finalTestQuiz
           }
-          if (finalTestData.usage) setUsage(recordUsage(finalTestData.usage.totalTokens, 1))
-          finalTestQuiz = finalTestData.quiz
         }
 
         setLoadingProgress(100)
         setLoadingMessage('Finalizing your reviewer...')
 
         window.setTimeout(() => {
-          if (cancelled) return
+          if (isStale()) return
           const newReviewer = {
             id: crypto.randomUUID(),
             createdAt: Date.now(),
             title: title.trim() || 'Untitled Reviewer',
             created: formatTimestamp(new Date()),
-            modules: generatedModules,
+            modules: [...gen.completed],
             finalTest: finalTestQuiz,
             collapsible,
           }
@@ -803,26 +834,34 @@ function App() {
             console.error('Failed to save reviewer', err)
             window.alert(`"${newReviewer.title}" was generated but could not be saved to your library (${err.message || 'unknown error'}). It'll disappear if you refresh — download it now if you want to keep it.`)
           })
+          genRef.current = { sourcesKey: null, moduleKey: null, testKey: null, plan: null, completed: [], finalTest: null }
           setTitle('')
           setNotes('')
           setSourceFiles([])
-          setPage('reviewers')
+          setIsGenerating(false)
+          if (pageRef.current === 'generating') {
+            setPage('reviewers')
+          } else {
+            setGenDone(true)
+          }
         }, 300)
 
       } catch (err) {
         if (stopCreep) stopCreep()
-        if (cancelled) return
+        if (isStale()) return
         setGenerationError(err.message || 'Something went wrong generating your reviewer.')
+        setIsGenerating(false)
       }
     }
 
     runGeneration()
 
     return () => {
-      cancelled = true
+      runIdRef.current++
+      controller.abort()
       if (stopCreep) stopCreep()
     }
-  }, [page, generationAttempt])
+  }, [isGenerating, generationAttempt])
 
   useEffect(() => {
     getAllReviewers()
@@ -843,16 +882,13 @@ function App() {
   function estimateRequestsNeeded() {
     const allSources = sourceFiles.map((s) => s.text)
     if (notes.trim()) allSources.push(notes.trim())
-    const sourceCount = allSources.length
-    const moduleDetectionCalls = sourceCount > 1 ? 0 : 1
-    const estimatedModuleCalls = sourceCount > 1
-      ? allSources.reduce((sum, text) => sum + Math.max(1, Math.ceil(text.length / CHUNK_CHAR_THRESHOLD)), 0)
-      : Math.max(1, Math.ceil((allSources[0] || '').length / CHUNK_CHAR_THRESHOLD))
+    const moduleCalls = allSources.reduce((sum, text) => sum + Math.max(1, Math.ceil(text.length / CHUNK_CHAR_THRESHOLD)), 0)
     const finalTestCalls = includeFinalTest ? 1 : 0
-    return moduleDetectionCalls + estimatedModuleCalls + finalTestCalls
+    return moduleCalls + finalTestCalls
   }
 
   function handleFinish() {
+    if (isGenerating) return
     const needed = estimateRequestsNeeded()
     const remaining = DAILY_REQUEST_LIMIT - getUsage().requestsUsed
     if (needed > remaining) {
@@ -862,15 +898,48 @@ function App() {
       if (!proceed) return
     }
     setGenerationError(null)
+    setGenDone(false)
     setGenerationAttempt((n) => n + 1)
+    setIsGenerating(true)
     setPage('generating')
   }
 
   function handleNewReviewer() {
+    if (isGenerating) return
+    setGenDone(false)
+    setGenerationError(null)
+    genRef.current = { sourcesKey: null, moduleKey: null, testKey: null, plan: null, completed: [], finalTest: null }
     setTitle('')
     setNotes('')
     setSourceFiles([])
     setPage('upload-title')
+  }
+
+  function handleCancelGeneration() {
+    runIdRef.current++
+    if (abortRef.current) abortRef.current.abort()
+    setIsGenerating(false)
+    setGenerationError(null)
+    setPage('configure')
+  }
+
+  async function handleImportLibrary(incomingReviewers) {
+    const existingIds = new Set(reviewers.map((r) => r.id))
+    const toAdd = incomingReviewers.filter((r) => r && r.id && Array.isArray(r.modules) && !existingIds.has(r.id))
+    if (toAdd.length === 0) {
+      window.alert('Nothing new to import — those reviewers are already in your library, or the file has no valid reviewers.')
+      return
+    }
+    for (const r of toAdd) {
+      try {
+        await saveReviewer(r)
+      } catch (err) {
+        console.error('Failed to save imported reviewer', r.title, err)
+      }
+    }
+    setReviewers((prev) => [...toAdd, ...prev])
+    const skipped = incomingReviewers.length - toAdd.length
+    window.alert(`Imported ${toAdd.length} reviewer${toAdd.length === 1 ? '' : 's'}${skipped ? ` (skipped ${skipped} already in your library or invalid)` : ''}.`)
   }
 
   function openReviewer(reviewer) {
@@ -916,19 +985,31 @@ function App() {
   return (
     <div className="app-shell" style={{ '--accent': accentColor }}>
       <HeroFxLayer />
-      <Sidebar page={page} setPage={setPage} canConfigure={canConfigure} title={title} onNewReviewer={handleNewReviewer} />
+      <Sidebar
+        page={page}
+        setPage={setPage}
+        canConfigure={canConfigure}
+        title={title}
+        onNewReviewer={handleNewReviewer}
+        isGenerating={isGenerating}
+        progress={loadingProgress}
+        genError={Boolean(generationError) && !isGenerating}
+        genDone={genDone}
+        onClearDone={() => { setGenDone(false); setPage('reviewers') }}
+      />
       <div className="content">
         {page === 'dashboard' && (
           <Dashboard
             reviewers={reviewers}
             usage={usage}
-            apiKey={apiKey}
+            apiKey={apiKey || serverHasKey}
             onNewReviewer={handleNewReviewer}
+            generating={isGenerating}
             onGoToSettings={() => setPage('settings')}
           />
         )}
         {page === 'settings' && (
-          <SettingsPage apiKey={apiKey} setApiKey={setApiKey} />
+          <SettingsPage apiKey={apiKey} setApiKey={setApiKey} reviewers={reviewers} onImport={handleImportLibrary} />
         )}
         {page === 'upload-title' && (
           <UploadTitleStep title={title} setTitle={setTitle} onNext={() => setPage('upload-sources')} />
@@ -953,7 +1034,7 @@ function App() {
           />
         )}
         {page === 'generating' && (
-          <GeneratingPage progress={loadingProgress} message={loadingMessage} error={generationError} onRetry={handleFinish} />
+          <GeneratingPage progress={loadingProgress} message={loadingMessage} error={generationError} onRetry={handleFinish} onCancel={handleCancelGeneration} />
         )}
         {page === 'reviewers' && (
           <ReviewersPage
@@ -968,7 +1049,7 @@ function App() {
   )
 }
 
-function Sidebar({ page, setPage, canConfigure, title, onNewReviewer }) {
+function Sidebar({ page, setPage, canConfigure, title, onNewReviewer, isGenerating, progress, genError, genDone, onClearDone }) {
   const isDashboard = page === 'dashboard'
   const isUpload = page === 'upload-title' || page === 'upload-sources'
   const isConfigure = page === 'configure'
@@ -983,13 +1064,15 @@ function Sidebar({ page, setPage, canConfigure, title, onNewReviewer }) {
         <button
           className={isUpload ? 'nav-item active' : 'nav-item'}
           onClick={onNewReviewer}
+          disabled={isGenerating}
+          title={isGenerating ? 'Wait for the current reviewer to finish generating' : undefined}
         >
           Create New Reviewer
         </button>
         <button
           className={isConfigure ? 'nav-item active' : 'nav-item'}
-          onClick={() => canConfigure && setPage('configure')}
-          disabled={!canConfigure}
+          onClick={() => canConfigure && !isGenerating && setPage('configure')}
+          disabled={!canConfigure || isGenerating}
           title={!canConfigure ? 'Upload a source first' : undefined}
         >
           Configure
@@ -997,11 +1080,21 @@ function Sidebar({ page, setPage, canConfigure, title, onNewReviewer }) {
         <button className={isReviewers ? 'nav-item active' : 'nav-item'} onClick={() => setPage('reviewers')}>Reviewers</button>
         <button className={isSettings ? 'nav-item active' : 'nav-item'} onClick={() => setPage('settings')}>Settings</button>
       </nav>
+      {(isGenerating || genError || genDone) && page !== 'generating' && (
+        <button
+          type="button"
+          className="nav-item"
+          style={{ marginTop: 16, textAlign: 'left', fontSize: 13 }}
+          onClick={() => (genDone ? onClearDone() : setPage('generating'))}
+        >
+          {isGenerating ? `Generating… ${Math.round(progress)}% (view)` : genError ? 'Generation failed — view' : 'Reviewer ready — view'}
+        </button>
+      )}
     </div>
   )
 }
 
-function Dashboard({ reviewers, usage, apiKey, onNewReviewer, onGoToSettings }) {
+function Dashboard({ reviewers, usage, apiKey, onNewReviewer, generating, onGoToSettings }) {
   const requestStatus = getRequestStatus(usage)
 
   return (
@@ -1009,7 +1102,7 @@ function Dashboard({ reviewers, usage, apiKey, onNewReviewer, onGoToSettings }) 
       <div className="dashboard-content">
         <div className="dashboard-header">
           <h2 className="page-title">Dashboard</h2>
-          <button className="btn-primary" onClick={onNewReviewer}>Create new reviewer</button>
+          <button className="btn-primary" onClick={onNewReviewer} disabled={generating} title={generating ? 'A reviewer is still generating' : undefined}>Create new reviewer</button>
         </div>
 
         {!apiKey && (
@@ -1048,10 +1141,39 @@ function Dashboard({ reviewers, usage, apiKey, onNewReviewer, onGoToSettings }) 
   )
 }
 
-function SettingsPage({ apiKey, setApiKey }) {
+function SettingsPage({ apiKey, setApiKey, reviewers, onImport }) {
   const [draft, setDraft] = useState(apiKey)
   const [justSaved, setJustSaved] = useState(false)
   const [visible, setVisible] = useState(false)
+  const importInputRef = useRef(null)
+
+  function handleExport() {
+    const data = JSON.stringify({ exportedAt: new Date().toISOString(), reviewers }, null, 2)
+    const blob = new Blob([data], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `studyclick-backup-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleImportFile(e) {
+    const file = e.target.files[0]
+    e.target.value = ''
+    if (!file) return
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text)
+      const incoming = Array.isArray(parsed.reviewers) ? parsed.reviewers : Array.isArray(parsed) ? parsed : null
+      if (!incoming) throw new Error('Not a StudyClick backup file')
+      onImport(incoming)
+    } catch (err) {
+      window.alert(`Could not import that file (${err.message || 'invalid format'}).`)
+    }
+  }
 
   function handleSave() {
     setApiKey(draft.trim())
@@ -1086,6 +1208,16 @@ function SettingsPage({ apiKey, setApiKey }) {
         {!apiKey && (
           <p className="quiz-hint" style={{ marginTop: 12 }}>No key saved yet — reviewer generation won't work until you add one.</p>
         )}
+
+        <h3 style={{ marginTop: 32 }}>Backup your library</h3>
+        <p className="hint" style={{ margin: '0 0 12px' }}>
+          Reviewers are stored only in this browser. Export a backup to move them to another computer or restore them later.
+        </p>
+        <div className="api-key-row">
+          <button className="btn-secondary" onClick={handleExport} disabled={!reviewers || reviewers.length === 0}>Export all reviewers</button>
+          <button className="btn-secondary" onClick={() => importInputRef.current.click()}>Import backup</button>
+          <input type="file" accept="application/json" ref={importInputRef} onChange={handleImportFile} hidden />
+        </div>
       </div>
     </div>
   )
@@ -1113,66 +1245,142 @@ function UploadTitleStep({ title, setTitle, onNext }) {
   )
 }
 
+const MAX_MODULES = 8
+
 function UploadSourcesStep({ notes, setNotes, sourceFiles, setSourceFiles, onNext }) {
   const fileInputRef = useRef(null)
   const [fileError, setFileError] = useState('')
-  const canProceed = sourceFiles.length > 0 || notes.trim().length > 0
+  const [isDragging, setIsDragging] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const notesCount = notes.trim() ? 1 : 0
+  const moduleCount = sourceFiles.length + notesCount
+  const atCap = moduleCount >= MAX_MODULES
+  const showDropzone = sourceFiles.length === 0 || adding
+  const canProceed = moduleCount > 0
+
+  async function processFile(file) {
+    setFileError('')
+    if (!file) return
+    if (atCap) {
+      setFileError(`You can have at most ${MAX_MODULES} modules.`)
+      return
+    }
+    if (!(file.type === 'application/pdf' || /\.pdf$/i.test(file.name))) {
+      setFileError(`${file.name} skipped (only PDFs are supported)`)
+      return
+    }
+    try {
+      const text = await extractTextFromPDF(file)
+      if (!text || !text.trim()) {
+        setFileError(`${file.name}: no readable text found — is it a scanned/image PDF?`)
+        return
+      }
+      setSourceFiles((prev) => [...prev, { file, name: file.name, title: file.name.replace(/\.pdf$/i, ''), text }])
+      setAdding(false)
+    } catch (err) {
+      console.error('Failed to read PDF', file.name, err)
+      setFileError(`${file.name}: ${err.message || 'could not be read'}`)
+    }
+  }
 
   async function handleFileChange(e) {
-    const selected = Array.from(e.target.files)
+    const file = e.target.files[0]
     e.target.value = ''
-    setFileError('')
+    await processFile(file)
+  }
 
-    const failed = []
-    for (const file of selected) {
-      try {
-        const text = await extractTextFromPDF(file)
-        if (!text || !text.trim()) {
-          failed.push(`${file.name} (no readable text found — is it a scanned/image PDF?)`)
-          continue
-        }
-        setSourceFiles((prev) => [...prev, { file, name: file.name, text }])
-      } catch (err) {
-        console.error('Failed to read PDF', file.name, err)
-        failed.push(`${file.name} (${err.message || 'could not be read'})`)
-      }
+  function handleDragOver(e) {
+    e.preventDefault()
+    setIsDragging(true)
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault()
+    setIsDragging(false)
+  }
+
+  async function handleDrop(e) {
+    e.preventDefault()
+    setIsDragging(false)
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length > 1) {
+      setFileError('One file per module — only the first file was used. Click "Add module" to add the others.')
     }
-    if (failed.length > 0) {
-      setFileError(`Couldn't process: ${failed.join(', ')}`)
-    }
+    await processFile(files[0])
   }
 
   function removeFile(index) {
     setSourceFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
+  function renameModule(index, title) {
+    setSourceFiles((prev) => prev.map((s, i) => (i === index ? { ...s, title } : s)))
+  }
+
   return (
     <div className="page">
       <h2 className="page-title">Upload your sources</h2>
-      <div className="dropzone" onClick={() => fileInputRef.current.click()}>
-        <input
-          type="file"
-          accept="application/pdf"
-          multiple
-          ref={fileInputRef}
-          onChange={handleFileChange}
-          hidden
-        />
-        <div className="dropzone-icon">📄</div>
-        <p>Upload your PDF</p>
-      </div>
-      {fileError && <p className="field-error">{fileError}</p>}
+      <p className="hint">Each PDF becomes one module (one tab) in your reviewer. Up to {MAX_MODULES} modules.</p>
+
       {sourceFiles.length > 0 && (
         <ul className="file-list">
           {sourceFiles.map((s, i) => (
-            <li key={i}>
-              {s.name}
+            <li key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>{i + 1}.</span>
+              <input
+                type="text"
+                value={s.title}
+                onChange={(e) => renameModule(i, e.target.value)}
+                aria-label={`Module ${i + 1} name`}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <span className="hint" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{s.name}</span>
               <button type="button" onClick={() => removeFile(i)}>×</button>
             </li>
           ))}
         </ul>
       )}
-      <div className="divider"><span>or paste text</span></div>
+
+      {showDropzone && (
+        <div
+          className={`dropzone${isDragging ? ' dragging' : ''}`}
+          onClick={() => fileInputRef.current.click()}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <input
+            type="file"
+            accept="application/pdf"
+            ref={fileInputRef}
+            onChange={handleFileChange}
+            hidden
+          />
+          <div className="dropzone-icon">📄</div>
+          <p>
+            {isDragging
+              ? 'Drop your PDF here'
+              : `Module ${sourceFiles.length + 1}: upload one PDF, or drag and drop it here`}
+          </p>
+        </div>
+      )}
+
+      {!showDropzone && (
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => setAdding(true)}
+          disabled={atCap}
+        >
+          + Add module ({moduleCount}/{MAX_MODULES})
+        </button>
+      )}
+      {showDropzone && sourceFiles.length > 0 && (
+        <button type="button" className="btn-secondary" style={{ marginTop: 8 }} onClick={() => setAdding(false)}>Cancel</button>
+      )}
+
+      {fileError && <p className="field-error">{fileError}</p>}
+      <div className="divider"><span>or paste text (counts as one module)</span></div>
       <textarea
         placeholder="Paste your notes here..."
         value={notes}
@@ -1300,13 +1508,16 @@ function ConfigurePage(props) {
   )
 }
 
-function GeneratingPage({ progress, message, error, onRetry }) {
+function GeneratingPage({ progress, message, error, onRetry, onCancel }) {
   if (error) {
     return (
       <div className="page generating">
         <h2 className="page-title">Something went wrong</h2>
         <p className="empty-state">{error}</p>
-        <button className="btn-primary" onClick={onRetry}>Try Again</button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn-primary" onClick={onRetry}>Try Again</button>
+          <button className="btn-secondary" onClick={onCancel}>Back</button>
+        </div>
       </div>
     )
   }
@@ -1323,6 +1534,7 @@ function GeneratingPage({ progress, message, error, onRetry }) {
           <span>{Math.round(progress)}%</span>
         </div>
       </div>
+      <button className="btn-secondary" style={{ marginTop: 16 }} onClick={onCancel}>Cancel</button>
     </div>
   )
 }
