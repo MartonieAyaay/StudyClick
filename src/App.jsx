@@ -1,6 +1,8 @@
 import { extractTextFromPDF } from './pdfUtils'
 import { Component, useEffect, useState, useRef } from 'react'
 import './App.css'
+import CursorGrid from './CursorGrid'
+import { useClickSparks } from './useClickSparks'
 import { getAllReviewers, saveReviewer, deleteReviewer } from './db'
 import {
   getUsage,
@@ -33,7 +35,7 @@ async function apiFetch(path, options = {}, apiKey) {
 
 function buildReviewerHTML(reviewer, accentColor) {
   const accent = accentColor || '#7091b8'
-  const titleText = (reviewer.title || 'Reviewer').replace(/</g, '<')
+  const titleText = (reviewer.title || 'Reviewer').replace(/</g, '&lt;')
   const reviewerJson = JSON.stringify(reviewer).replace(/</g, '\\u003c')
 
   const css = `
@@ -502,6 +504,163 @@ function buildReviewerHTML(reviewer, accentColor) {
 </html>`
 }
 
+// ---- Hero landing (2b) ----
+
+const HERO_FAQS = [
+  ['What is StudyClick?', 'Upload a PDF or paste your notes, and StudyClick turns it into an interactive study guide — a summary, key terms, concept breakdowns, and an optional practice test.'],
+  ['Why do I need to add my own API key?', "StudyClick uses Google's Gemini AI to generate your reviewers, and each person needs their own free key so usage doesn't get shared or capped by someone else's limit. Add it once in Settings — it's free."],
+  ['Is my data private?', 'Your notes and generated reviewers stay on your own device. Nothing is uploaded to a shared server or seen by anyone else.'],
+  ["What's a Final Test?", 'An optional 15–60 question practice quiz built from your material, scored automatically with a review at the end. Turn it on or off when configuring a reviewer.'],
+  ["Why don't all my concepts have worked examples?", "Examples only show up where they're actually useful — math, formulas, step-by-step procedures. Purely definitional or descriptive concepts skip them so you're not stuck reading filler."],
+  ['My reviewer generation failed. What happened?', "Usually a temporary hiccup on the AI side, or you've hit your free daily usage limit (the app will tell you which). Just try again — nothing gets used up on a failed attempt that doesn't complete."],
+  ['Can I keep a reviewer forever?', 'Yes — download any reviewer as a standalone file that opens and works without StudyClick running.'],
+  ['Does it work offline?', 'Viewing saved reviewers, yes. Generating new ones requires an internet connection to reach Gemini.'],
+]
+
+function HeroFxLayer() {
+  const sparkRef = useClickSparks()
+  return (
+    <>
+      <CursorGrid className="fx-layer" cellSize={70} color="#ffffff" radius={150} holdTime={380} fadeDuration={800} lineWidth={1.2} maxOpacity={1} pulseSpeed={620} />
+      <canvas ref={sparkRef} className="fx-layer fx-sparks" />
+    </>
+  )
+}
+
+function HeroAccordionPanel({ active, onSelect, title, collapsedLabel, children }) {
+  return (
+    <div className="accordion-panel" style={{ flex: `${active ? 11 : 1} 1 0` }} onClick={onSelect}>
+      <div className="accordion-panel-content" style={{ opacity: active ? 1 : 0 }}>
+        <strong className="accordion-panel-title">{title}</strong>
+        {children}
+      </div>
+      <div className="accordion-halftone" style={{ opacity: active ? 0 : 1 }}>
+        <div className="accordion-halftone-dots" />
+        <div className="accordion-halftone-fill" />
+      </div>
+      <div className="accordion-collapsed" style={{ opacity: active ? 0 : 1 }}>
+        <span className="accordion-collapsed-bar" />
+        <span className="accordion-collapsed-label">{collapsedLabel}</span>
+      </div>
+      {!active && <button className="accordion-hit" aria-label={`Open ${collapsedLabel}`} onClick={onSelect} />}
+    </div>
+  )
+}
+
+function HeroLanding({ accentColor, onGetStarted }) {
+  const [panel, setPanel] = useState(0)
+  const [openFaq, setOpenFaq] = useState(0)
+
+  return (
+    <div className="hero-page" style={{ '--accent': accentColor }}>
+      <HeroFxLayer />
+
+      <div className="hero-topbar">
+        <div className="hero-brand"><img src="./studyclick-icon.png" alt="" className="hero-brand-icon" /><span className="hero-logo">StudyClick</span></div>
+      </div>
+
+      <div className="hero-grid">
+        <div className="hero-left">
+          <span className="hero-kicker">PDF → reviewer</span>
+          <h1 className="hero-title">Create reviewers with just a few clicks.</h1>
+          <p className="hero-subtitle">Upload a PDF or paste text and get a structured reviewer — modules, key terms, worked examples and quizzes — in a couple of minutes.</p>
+
+          <div className="hero-steps">
+            <div className="hero-steps-line" />
+            <div className="hero-step">
+              <div className="hero-step-num">1</div>
+              <span className="hero-step-label">Upload</span>
+            </div>
+            <div className="hero-step">
+              <div className="hero-step-num">2</div>
+              <span className="hero-step-label">Configure</span>
+            </div>
+            <div className="hero-step">
+              <div className="hero-step-num">3</div>
+              <span className="hero-step-label">Study</span>
+            </div>
+          </div>
+
+          <div className="hero-cta">
+            <button className="btn-outline" onClick={onGetStarted}>Continue</button>
+            <span className="hero-note">Free — runs on your own Gemini key. <strong>1,500 requests a day</strong>, no account needed.</span>
+          </div>
+
+          <div className="hero-features">
+            <span className="hero-feature">
+              <svg className="hero-feature-icon" viewBox="0 0 24 24" width="16" height="16" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19V7a2 2 0 0 1 2-2h8l4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"></path><path d="M8 13h6"></path><path d="M8 16h4"></path></svg>
+              Worked examples only where needed
+            </span>
+            <span className="hero-feature">
+              <svg className="hero-feature-icon" viewBox="0 0 24 24" width="16" height="16" strokeLinecap="round" strokeLinejoin="round"><path d="M12 4v10"></path><path d="M8 11l4 4 4-4"></path><path d="M5 19h14"></path></svg>
+              Downloadable standalone reviewers
+            </span>
+            <span className="hero-feature">
+              <svg className="hero-feature-icon" viewBox="0 0 24 24" width="16" height="16" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"></circle><path d="M12 3v2"></path><path d="M12 19v2"></path><path d="M3 12h2"></path><path d="M19 12h2"></path></svg>
+              Light and dark mode
+            </span>
+          </div>
+        </div>
+
+        <div className="hero-right">
+          <div className="hero-blob-a" />
+          <div className="hero-blob-b" />
+          <div className="hero-accordion">
+            <HeroAccordionPanel active={panel === 0} onSelect={() => setPanel(0)} title="Cell Biology" collapsedLabel="Sample reviewer">
+              <div className="accordion-tags">
+                <span className="tag-accent">The Cell</span>
+                <span className="tag-muted">Organelles</span>
+                <span className="tag-muted">Final Test</span>
+              </div>
+              <div className="accordion-card-section">
+                <div className="accordion-card-section-head"><strong>Lesson Summary</strong><span style={{ transform: 'rotate(90deg)', fontSize: 14 }}>▸</span></div>
+                <p>The cell is the basic structural and functional unit of all living organisms — cell theory, prokaryotes versus eukaryotes, and how the plasma membrane regulates transport.</p>
+              </div>
+              <div className="accordion-card-section">
+                <div className="accordion-card-section-head"><strong>Key Concepts &amp; Terms</strong><span style={{ transform: 'rotate(90deg)', fontSize: 14 }}>▸</span></div>
+                <div className="accordion-card-section-row"><strong>Plasma membrane</strong><span>Selectively permeable bilayer controlling what enters the cell.</span></div>
+                <div className="accordion-card-section-row"><strong>Osmosis</strong><span>Diffusion of water toward higher solute concentration.</span></div>
+              </div>
+              <div className="accordion-card-section">
+                <strong style={{ fontFamily: 'var(--heading)', fontSize: 15, color: '#2d2130' }}>1. Which organelle synthesizes ATP?</strong>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, color: '#2d2130' }}><input type="radio" name="heroq" defaultChecked /> Mitochondrion</label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, color: '#2d2130' }}><input type="radio" name="heroq" /> Ribosome</label>
+              </div>
+            </HeroAccordionPanel>
+
+            <HeroAccordionPanel active={panel === 1} onSelect={() => setPanel(1)} title="Questions" collapsedLabel="FAQ">
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', borderTop: '1px solid rgba(0,0,0,.14)' }}>
+                {HERO_FAQS.map(([q, a], i) => (
+                  <div className="faq-item" key={q}>
+                    <button className="faq-q" onClick={() => setOpenFaq(openFaq === i ? -1 : i)}>
+                      {q}<span className="faq-q-sign">{openFaq === i ? '−' : '+'}</span>
+                    </button>
+                    {openFaq === i && <p className="faq-a">{a}</p>}
+                  </div>
+                ))}
+                <div className="faq-footer">
+                  <span className="faq-footer-bar" />
+                  <span className="faq-footer-text">Still stuck? Your key, theme and accent all live in Settings — nothing else to set up.</span>
+                </div>
+              </div>
+            </HeroAccordionPanel>
+
+            <HeroAccordionPanel active={panel === 2} onSelect={() => setPanel(2)} title="What you get" collapsedLabel="What you get">
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', borderTop: '1px solid rgba(0,0,0,.14)' }}>
+                <div className="what-you-get-row"><strong className="what-you-get-label">Modules</strong><span className="what-you-get-text">Your material split into modules, each collapsible and searchable across the set.</span></div>
+                <div className="what-you-get-row"><strong className="what-you-get-label">Glossary</strong><span className="what-you-get-text">Key terms pulled out and defined in the wording you uploaded, or paraphrased.</span></div>
+                <div className="what-you-get-row"><strong className="what-you-get-label">Examples</strong><span className="what-you-get-text">Step-by-step worked examples only where a concept calls for one.</span></div>
+                <div className="what-you-get-row"><strong className="what-you-get-label">Final test</strong><span className="what-you-get-text">An optional 15–60 question practice test, scored with a review at the end.</span></div>
+                <div className="what-you-get-row"><strong className="what-you-get-label">Offline</strong><span className="what-you-get-text">Download any reviewer as a standalone file that opens without StudyClick.</span></div>
+              </div>
+            </HeroAccordionPanel>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [view, setView] = useState('landing')
   const [page, setPage] = useState('upload-title')
@@ -743,15 +902,7 @@ function App() {
   }
 
   if (view === 'landing') {
-    return (
-      <div className="landing" style={{ '--accent': accentColor }}>
-        <div className="landing-card">
-          <h1>StudyClick</h1>
-          <p>Create reviewers with just a few clicks.</p>
-          <button className="btn-primary" onClick={goToApp}>Get Started</button>
-        </div>
-      </div>
-    )
+    return <HeroLanding accentColor={accentColor} onGetStarted={goToApp} />
   }
 
   if (page === 'viewer' && selectedReviewer) {
@@ -764,6 +915,7 @@ function App() {
 
   return (
     <div className="app-shell" style={{ '--accent': accentColor }}>
+      <HeroFxLayer />
       <Sidebar page={page} setPage={setPage} canConfigure={canConfigure} title={title} onNewReviewer={handleNewReviewer} />
       <div className="content">
         {page === 'dashboard' && (
