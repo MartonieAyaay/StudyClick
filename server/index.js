@@ -8,6 +8,7 @@ const app = express()
 const allowedOrigins = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    ...(process.env.FRONTEND_URL || '').split(',').map((u) => u.trim().replace(/\/$/, '')).filter(Boolean),
 ]
 
 app.use(cors({
@@ -52,7 +53,18 @@ async function generateWithRetry(ai, params, maxRetries = 5) {
         try {
             // From the 3rd attempt on, switch to a fallback model in case the primary one is overloaded.
             const callParams = attempt >= 3 ? { ...params, model: FALLBACK_MODEL } : params
-            return await ai.models.generateContent(callParams)
+            // Cap output length and add a hard timeout so one stuck request can't hang the whole generation;
+            // timeouts fall into the retry path below.
+            const guardedParams = {
+                ...callParams,
+                config: {
+                    maxOutputTokens: 20000,
+                    thinkingConfig: { thinkingBudget: 0 },
+                    ...(callParams.config || {}),
+                    httpOptions: { timeout: 150000 },
+                },
+            }
+            return await ai.models.generateContent(guardedParams)
         } catch (err) {
             const message = String(err)
             const isResourceExhausted = message.includes('RESOURCE_EXHAUSTED') || message.includes('429')
@@ -80,7 +92,7 @@ async function generateWithRetry(ai, params, maxRetries = 5) {
     }
 }
 
-const CHUNK_CHAR_THRESHOLD = 18000
+const CHUNK_CHAR_THRESHOLD = 10000
 
 function splitTextIntoChunks(text, maxChars) {
     const paragraphs = text.split(/\n\s*\n/)
@@ -138,8 +150,20 @@ async function generateChunkedModuleContent(ai, text, descriptionStyle, includeE
     let combined = null
     const totalUsage = { promptTokens: 0, outputTokens: 0, totalTokens: 0, requests: 0 }
 
-    for (const chunk of chunks) {
-        const { data, usage } = await generateModuleContentSingle(ai, chunk, descriptionStyle, includeExamples)
+    console.log(`Module is large: splitting into ${chunks.length} chunks (3 at a time)`)
+    const results = []
+    const CONCURRENCY = 3
+    for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+        const batch = chunks.slice(i, i + CONCURRENCY).map(async (chunk, j) => {
+            const started = Date.now()
+            const r = await generateModuleContentSingle(ai, chunk, descriptionStyle, includeExamples)
+            console.log(`  chunk ${i + j + 1}/${chunks.length} done in ${Math.round((Date.now() - started) / 1000)}s`)
+            return r
+        })
+        results.push(...(await Promise.all(batch)))
+    }
+
+    for (const { data, usage } of results) {
         totalUsage.promptTokens += usage.promptTokens
         totalUsage.outputTokens += usage.outputTokens
         totalUsage.totalTokens += usage.totalTokens
@@ -270,7 +294,7 @@ ${text}`
                 },
                 required: ['summary', 'keyConcepts', 'concepts']
             },
-            maxOutputTokens: 32768
+            maxOutputTokens: 16384
         }
     })
 
@@ -588,7 +612,7 @@ app.post('/generate-reviewer', async (req, res) => {
     }
 })
 
-const PORT = 3001
+const PORT = process.env.PORT || 3001
 app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`)
 })

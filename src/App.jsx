@@ -21,7 +21,7 @@ function formatTimestamp(date) {
   return `${hh}:${mm} ${mo}/${dd}/${yy}`
 }
 
-const API_BASE = 'http://localhost:3001'
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001'
 
 async function apiFetch(path, options = {}, apiKey) {
   const headers = { ...(options.headers || {}) }
@@ -744,12 +744,18 @@ function App() {
     // Ticks the progress bar smoothly from `floor` toward `ceiling` (never
     // reaching it) while a request is in flight, so the bar keeps moving
     // instead of freezing at one number until the response comes back.
-    function creepProgress(floor, ceiling) {
+    function creepProgress(floor, ceiling, baseMessage) {
       let current = floor
       const cap = ceiling - Math.min(2, (ceiling - floor) * 0.2)
+      const startedAt = Date.now()
       const intervalId = window.setInterval(() => {
         current = Math.min(current + (cap - current) * 0.06 + 0.1, cap)
         setLoadingProgress(current)
+        if (baseMessage) {
+          const secs = (Date.now() - startedAt) / 1000
+          if (secs > 120) setLoadingMessage(`${baseMessage} — Gemini is very slow right now; it keeps retrying automatically (${Math.round(secs)}s)`)
+          else if (secs > 40) setLoadingMessage(`${baseMessage} — Gemini is responding slowly, still working (${Math.round(secs)}s)`)
+        }
       }, 150)
       return () => window.clearInterval(intervalId)
     }
@@ -768,9 +774,10 @@ function App() {
           if (isStale()) return
           const floor = 20 + i * perModuleSpan
           const ceiling = 20 + (i + 1) * perModuleSpan
-          setLoadingMessage(`Generating content for "${modules[i].title}" (${i + 1}/${modules.length})...`)
+          const moduleMessage = `Generating content for "${modules[i].title}" (${i + 1}/${modules.length})`
+          setLoadingMessage(`${moduleMessage}...`)
           setLoadingProgress(floor)
-          stopCreep = creepProgress(floor, ceiling)
+          stopCreep = creepProgress(floor, ceiling, moduleMessage)
 
           const contentRes = await apiFetch('/generate', {
             method: 'POST',
@@ -795,7 +802,7 @@ function App() {
             finalTestQuiz = gen.finalTest
           } else {
             setLoadingMessage('Building your Final Test...')
-            stopCreep = creepProgress(80, 98)
+            stopCreep = creepProgress(80, 98, 'Building your Final Test')
 
             const finalTestRes = await apiFetch('/test-final-test', {
               method: 'POST',
@@ -877,7 +884,7 @@ function App() {
     setPage('dashboard')
   }
 
-  const CHUNK_CHAR_THRESHOLD = 18000
+  const CHUNK_CHAR_THRESHOLD = 10000
 
   function estimateRequestsNeeded() {
     const allSources = sourceFiles.map((s) => s.text)
