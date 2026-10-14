@@ -11,15 +11,24 @@ const allowedOrigins = [
     ...(process.env.FRONTEND_URL || '').split(',').map((u) => u.trim().replace(/\/$/, '')).filter(Boolean),
 ]
 
-app.use(cors({
-    origin(origin, callback) {
-        if (!origin || origin === 'null' || allowedOrigins.includes(origin)) {
-            callback(null, true)
-        } else {
-            callback(new Error('Not allowed by CORS'))
-        }
-    },
+app.use(cors((req, callback) => {
+    const origin = req.header('origin')
+    let sameSite = false
+    try {
+        sameSite = Boolean(origin) && new URL(origin).host === req.header('host')
+    } catch (e) {
+        sameSite = false
+    }
+    const allowed = !origin || origin === 'null' || sameSite || allowedOrigins.includes(origin)
+    callback(null, { origin: allowed })
 }))
+// On Vercel the API is served under /api/... — strip that prefix so the routes below match.
+app.use((req, res, next) => {
+    if (req.url === '/api' || req.url.startsWith('/api/')) {
+        req.url = req.url.slice(4) || '/'
+    }
+    next()
+})
 app.use(express.json())
 
 function getClient(req) {
@@ -613,6 +622,10 @@ app.post('/generate-reviewer', async (req, res) => {
 })
 
 const PORT = process.env.PORT || 3001
-app.listen(PORT, () => {
-    console.log(`Server listening on http://localhost:${PORT}`)
-})
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`Server listening on http://localhost:${PORT}`)
+    })
+}
+
+module.exports = app
