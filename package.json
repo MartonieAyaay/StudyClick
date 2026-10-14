@@ -13,6 +13,10 @@
     "electron:build": "npm run build && electron-builder --win"
   },
   "dependencies": {
+    "@google/genai": "^2.29.1",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.7",
+    "express": "^5.3.0",
     "idb": "^8.0.3",
     "pdfjs-dist": "^6.2.108",
     "react": "^19.2.7",
